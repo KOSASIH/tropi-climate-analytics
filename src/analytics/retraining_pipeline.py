@@ -1,293 +1,397 @@
 """
-Automated model retraining pipeline with A/B testing and champion/challenger management.
-Runs on schedule: XGBoost weekly (Mon 01:00 WIB), Prophet monthly (1st 02:00 WIB),
-CNN quarterly (1st Jan/Apr/Jul/Oct 03:00 WIB).
+Automated Retraining Pipeline — ANALYTICA
+Data-drift detection (PSI + KS) and champion/challenger A/B model management.
 """
 
-import os
+from __future__ import annotations
+
 import json
-import hashlib
-import logging
-from datetime import datetime, timedelta
-from enum import Enum
+import os
+from datetime import datetime
+from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from loguru import logger
 
-from .mlflow_setup import ModelTracker, register_model, promote_model, ModelRegistry
-from .feature_engineering import FeatureMatrix
-from .models import PrecipNowcastXGB, SeasonalProphet, SatelliteClassifierCNN
+from .mlflow_setup import (
+    MLFLOW_EXPERIMENT_NAME,
+    MODEL_REGISTRY_NAMES,
+    get_latest_model_version,
+    promote_model,
+    setup_mlflow,
+)
 
-logger = logging.getLogger(__name__)
+# ─────────────────────────────────────────────────────────────────────────────
+# Constants
+# ─────────────────────────────────────────────────────────────────────────────
 
+PSI_THRESHOLD      = 0.2    # population stability index — retrain if exceeded
+KS_P_THRESHOLD     = 0.05   # KS test p-value — retrain if below
+PERF_DEGRADATION   = 0.10   # 10% RMSE increase triggers retraining
+CHAMPION_WIN_RATE  = 0.60   # challenger must beat champion 60% of A/B evaluations
 
-# ── Enums & constants ──────────────────────────────────────────────────────────
-
-class ModelType(str, Enum):
-    XGB_PRECIP    = "xgb_precip"
-    PROPHET       = "prophet"
-    CNN_LANDCOVER = "cnn_landcover"
-    CNN_CLOUD     = "cnn_cloud"
-    LSTM_STREAM   = "lstm_stream"
-
-
-RETRAIN_SCHEDULES = {
-    ModelType.XGB_PRECIP:    "0 18 * * 0",       # Sun 01:00 WIB (UTC+7)
-    ModelType.PROPHET:       "0 19 1 * *",        # 1st of month 02:00 WIB
-    ModelType.CNN_LANDCOVER: "0 20 1 1,4,7,10 *", # Quarterly 03:00 WIB
-    ModelType.CNN_CLOUD:     "0 20 1 1,4,7,10 *",
-    ModelType.LSTM_STREAM:   "0 19 1 * *",
-}
-
-PERFORMANCE_THRESHOLDS = {
-    ModelType.XGB_PRECIP:    {"rmse_24h": 8.0,  "mae_24h": 5.0},   # mm
-    ModelType.PROPHET:       {"mape_monthly": 0.15},                 # 15%
-    ModelType.CNN_LANDCOVER: {"accuracy": 0.85, "f1_macro": 0.80},
-    ModelType.CNN_CLOUD:     {"accuracy": 0.92, "f1_macro": 0.90},
-    ModelType.LSTM_STREAM:   {"nse": 0.80,      "rmse": 50.0},      # m³/s
+RETRAINING_SCHEDULE = {
+    "precipitation_nowcast": {"cron": "0 1 * * 1",   "tz": "Asia/Jakarta"},   # weekly Mon 01:00
+    "seasonal_forecast":     {"cron": "0 2 1 * *",   "tz": "Asia/Jakarta"},   # monthly 1st 02:00
+    "land_cover_cnn":        {"cron": "0 3 1 */3 *", "tz": "Asia/Jakarta"},   # quarterly
 }
 
 
-# ── Data loading stubs (filled by DATA-FLOW feature store) ────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Data Drift Detection
+# ─────────────────────────────────────────────────────────────────────────────
 
-def load_training_window(
-    model_type: ModelType,
-    end_date: Optional[datetime] = None,
-    lookback_days: int = 365,
-) -> Tuple[pd.DataFrame, Any]:
+class DataDriftDetector:
     """
-    Load training data from the feature store for the given model type.
-    Returns (features_df, targets). Actual implementation calls DATA-FLOW API.
-    """
-    end = end_date or datetime.utcnow()
-    start = end - timedelta(days=lookback_days)
-    logger.info("Loading %s training data: %s → %s", model_type, start.date(), end.date())
-    # TODO: integrate with DATA-FLOW Kafka feature store
-    raise NotImplementedError("DATA-FLOW feature store integration required")
-
-
-def load_validation_window(
-    model_type: ModelType,
-    end_date: Optional[datetime] = None,
-    holdout_days: int = 90,
-) -> Tuple[pd.DataFrame, Any]:
-    end = end_date or datetime.utcnow()
-    start = end - timedelta(days=holdout_days)
-    logger.info("Loading %s validation data: %s → %s", model_type, start.date(), end.date())
-    raise NotImplementedError("DATA-FLOW feature store integration required")
-
-
-# ── Evaluation helpers ─────────────────────────────────────────────────────────
-
-def evaluate_model(
-    model: Any,
-    X_val: pd.DataFrame,
-    y_val: Any,
-    model_type: ModelType,
-) -> Dict[str, float]:
-    """Dispatch to the appropriate evaluation function by model type."""
-    if model_type == ModelType.XGB_PRECIP:
-        return model.score(X_val, y_val)
-    if model_type == ModelType.PROPHET:
-        from sklearn.metrics import mean_absolute_percentage_error
-        preds = model.predict(horizon_days=len(X_val))
-        metrics = {}
-        for var, fc in preds.items():
-            merged = fc.merge(y_val[var], on="ds", how="inner")
-            metrics[f"mape_{var}"] = float(
-                mean_absolute_percentage_error(merged["y"], merged["yhat"])
-            )
-        return metrics
-    if model_type in (ModelType.CNN_LANDCOVER, ModelType.CNN_CLOUD):
-        from sklearn.metrics import accuracy_score, f1_score
-        import torch
-        logits = model.predict(torch.tensor(X_val, dtype=torch.float32))
-        preds  = logits.numpy()
-        return {
-            "accuracy": float(accuracy_score(y_val, preds)),
-            "f1_macro": float(f1_score(y_val, preds, average="macro")),
-        }
-    return {}
-
-
-def meets_threshold(metrics: Dict[str, float], model_type: ModelType) -> bool:
-    thresholds = PERFORMANCE_THRESHOLDS.get(model_type, {})
-    for metric, threshold in thresholds.items():
-        value = metrics.get(metric)
-        if value is None:
-            logger.warning("Metric '%s' missing from evaluation results", metric)
-            return False
-        # Lower is better for error metrics; higher for accuracy/NSE/F1
-        if metric.startswith(("rmse", "mae", "mape")):
-            if value > threshold:
-                logger.info("Metric %s=%.4f exceeds threshold %.4f", metric, value, threshold)
-                return False
-        else:
-            if value < threshold:
-                logger.info("Metric %s=%.4f below threshold %.4f", metric, value, threshold)
-                return False
-    return True
-
-
-# ── A/B testing ────────────────────────────────────────────────────────────────
-
-class ABTestManager:
-    """
-    Manages champion/challenger routing for A/B model evaluation.
-    Challenger receives `challenger_traffic_pct`% of inference requests.
-    Tracks online metrics and promotes challenger if it consistently outperforms champion.
+    Detects covariate shift between training-time and current feature distributions.
+    Uses Population Stability Index (PSI) and Kolmogorov-Smirnov test.
     """
 
-    def __init__(
-        self,
-        model_type: ModelType,
-        champion_name: str,
-        challenger_name: str,
-        challenger_traffic_pct: float = 10.0,
-        min_samples: int = 1000,
-    ):
-        self.model_type             = model_type
-        self.champion_name          = champion_name
-        self.challenger_name        = challenger_name
-        self.challenger_traffic_pct = challenger_traffic_pct
-        self.min_samples            = min_samples
-        self._champion_metrics: List[float]   = []
-        self._challenger_metrics: List[float] = []
+    def __init__(self, n_bins: int = 10) -> None:
+        self.n_bins    = n_bins
+        self.reference: Optional[pd.DataFrame] = None
+        self.report:   Dict[str, Any]          = {}
 
-    def route(self, request_id: str) -> str:
-        """Deterministic routing by hashing request_id. Returns 'champion' or 'challenger'."""
-        h = int(hashlib.sha256(request_id.encode()).hexdigest(), 16) % 100
-        return "challenger" if h < self.challenger_traffic_pct else "champion"
+    def fit(self, reference_df: pd.DataFrame) -> "DataDriftDetector":
+        """Store reference (training) distribution."""
+        self.reference = reference_df.copy()
+        logger.info(f"DriftDetector fitted on {len(reference_df)} reference samples")
+        return self
 
-    def record(self, model: str, metric_value: float) -> None:
-        if model == "champion":
-            self._champion_metrics.append(metric_value)
-        else:
-            self._challenger_metrics.append(metric_value)
+    # ── PSI ───────────────────────────────────────────────────────────────────
 
-    def should_promote(self) -> Tuple[bool, str]:
-        """
-        Returns (should_promote, reason).
-        Uses Welch's t-test; promotes if challenger is significantly better (p<0.05).
-        """
-        if (len(self._challenger_metrics) < self.min_samples or
-                len(self._champion_metrics) < self.min_samples):
-            return False, f"Insufficient samples (challenger={len(self._challenger_metrics)}, min={self.min_samples})"
+    @staticmethod
+    def _psi_one(ref: np.ndarray, cur: np.ndarray, n_bins: int) -> float:
+        """Population Stability Index for one feature."""
+        bins   = np.percentile(ref, np.linspace(0, 100, n_bins + 1))
+        bins[0]  -= 1e-9
+        bins[-1] += 1e-9
+        ref_p = np.histogram(ref, bins=bins)[0] / len(ref) + 1e-6
+        cur_p = np.histogram(cur, bins=bins)[0] / len(cur) + 1e-6
+        return float(np.sum((cur_p - ref_p) * np.log(cur_p / ref_p)))
 
+    def psi(self, current_df: pd.DataFrame) -> Dict[str, float]:
+        """Compute PSI for all numeric features."""
+        if self.reference is None:
+            raise RuntimeError("Call fit() first.")
+        cols    = self.reference.select_dtypes(include=[np.number]).columns
+        results = {}
+        for col in cols:
+            if col in current_df.columns:
+                results[col] = self._psi_one(
+                    self.reference[col].dropna().values,
+                    current_df[col].dropna().values,
+                    self.n_bins,
+                )
+        return results
+
+    # ── KS ────────────────────────────────────────────────────────────────────
+
+    def ks_test(self, current_df: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+        """Kolmogorov-Smirnov two-sample test for each numeric feature."""
         from scipy import stats
-        t_stat, p_value = stats.ttest_ind(
-            self._champion_metrics, self._challenger_metrics, equal_var=False
+        if self.reference is None:
+            raise RuntimeError("Call fit() first.")
+        cols    = self.reference.select_dtypes(include=[np.number]).columns
+        results = {}
+        for col in cols:
+            if col in current_df.columns:
+                stat, p = stats.ks_2samp(
+                    self.reference[col].dropna().values,
+                    current_df[col].dropna().values,
+                )
+                results[col] = {"statistic": float(stat), "p_value": float(p)}
+        return results
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+
+    def detect(self, current_df: pd.DataFrame) -> Dict[str, Any]:
+        """Run full drift assessment and return actionable summary."""
+        psi_scores = self.psi(current_df)
+        ks_results = self.ks_test(current_df)
+
+        drifted_psi = {k: v for k, v in psi_scores.items() if v > PSI_THRESHOLD}
+        drifted_ks  = {k: v for k, v in ks_results.items()
+                       if v["p_value"] < KS_P_THRESHOLD}
+
+        should_retrain = len(drifted_psi) > 0 or len(drifted_ks) > 0
+
+        self.report = {
+            "timestamp":         datetime.utcnow().isoformat(),
+            "total_features":    len(psi_scores),
+            "psi_drifted":       drifted_psi,
+            "ks_drifted":        drifted_ks,
+            "max_psi":           max(psi_scores.values()) if psi_scores else 0.0,
+            "psi_threshold":     PSI_THRESHOLD,
+            "ks_p_threshold":    KS_P_THRESHOLD,
+            "should_retrain":    should_retrain,
+            "drift_severity":    self._severity(drifted_psi, psi_scores),
+        }
+
+        if should_retrain:
+            logger.warning(
+                f"Drift detected! PSI drifted={len(drifted_psi)}, "
+                f"KS drifted={len(drifted_ks)} → retraining recommended"
+            )
+        else:
+            logger.info("No significant drift detected")
+        return self.report
+
+    @staticmethod
+    def _severity(drifted: Dict[str, float], all_psi: Dict[str, float]) -> str:
+        if not all_psi:
+            return "none"
+        max_psi = max(all_psi.values())
+        if max_psi > 0.5:   return "critical"
+        if max_psi > 0.2:   return "moderate"
+        return "none"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Champion / Challenger A/B Management
+# ─────────────────────────────────────────────────────────────────────────────
+
+class ChampionChallengerManager:
+    """
+    Manages champion vs challenger A/B evaluation.
+    A challenger must win >= CHAMPION_WIN_RATE of evaluation rounds to be promoted.
+    """
+
+    def __init__(self, model_name: str) -> None:
+        self.model_name  = model_name
+        self.champion_v: Optional[str] = None
+        self.challenger_v: Optional[str] = None
+        self._eval_results: List[Dict[str, float]] = []
+
+    def load_champion(self) -> Optional[str]:
+        self.champion_v = get_latest_model_version(self.model_name, stage="Production")
+        logger.info(f"Champion: {self.model_name} v{self.champion_v}")
+        return self.champion_v
+
+    def register_challenger(self, run_id: str) -> str:
+        """Register newly trained model as Staging challenger."""
+        from mlflow.tracking import MlflowClient
+        client = MlflowClient()
+        mv     = client.get_run(run_id).info
+        result = client.create_model_version(
+            name=self.model_name, source=f"runs:/{run_id}/model", run_id=run_id,
         )
-        champ_mean = np.mean(self._champion_metrics)
-        chall_mean = np.mean(self._challenger_metrics)
-        better = chall_mean < champ_mean  # lower error is better
+        self.challenger_v = result.version
+        client.transition_model_version_stage(
+            self.model_name, self.challenger_v, "Staging",
+            archive_existing_versions=False,
+        )
+        logger.info(f"Challenger registered: {self.model_name} v{self.challenger_v} → Staging")
+        return self.challenger_v
 
-        if better and p_value < 0.05:
-            reason = (f"Challenger ({chall_mean:.4f}) significantly better than "
-                      f"champion ({champ_mean:.4f}), p={p_value:.4f}")
-            return True, reason
+    def evaluate_round(
+        self,
+        champion_metric: float,
+        challenger_metric: float,
+        metric_name: str = "rmse",
+        lower_is_better: bool = True,
+    ) -> str:
+        """Record one A/B evaluation round. Returns 'challenger'|'champion'."""
+        challenger_wins = (challenger_metric < champion_metric if lower_is_better
+                           else challenger_metric > champion_metric)
+        winner = "challenger" if challenger_wins else "champion"
+        self._eval_results.append({
+            "champion_metric":   champion_metric,
+            "challenger_metric": challenger_metric,
+            "metric_name":       metric_name,
+            "winner":            winner,
+        })
+        logger.info(
+            f"A/B round {len(self._eval_results)} | "
+            f"champion={champion_metric:.4f} vs challenger={challenger_metric:.4f} "
+            f"→ {winner}"
+        )
+        return winner
 
-        return False, f"Challenger not significantly better (p={p_value:.4f})"
+    def should_promote(self) -> Tuple[bool, float]:
+        """Return (should_promote, challenger_win_rate)."""
+        if not self._eval_results:
+            return False, 0.0
+        n      = len(self._eval_results)
+        wins   = sum(1 for r in self._eval_results if r["winner"] == "challenger")
+        rate   = wins / n
+        promote = rate >= CHAMPION_WIN_RATE
+        logger.info(f"A/B summary: {wins}/{n} challenger wins ({rate:.1%}) | "
+                    f"threshold={CHAMPION_WIN_RATE:.0%} → "
+                    f"{'PROMOTE' if promote else 'KEEP CHAMPION'}")
+        return promote, rate
+
+    def finalize(self) -> Dict[str, Any]:
+        """Promote challenger if win-rate threshold met, else archive it."""
+        promote, rate = self.should_promote()
+        if promote and self.challenger_v:
+            promote_model(self.model_name, self.challenger_v, "Production")
+            if self.champion_v:
+                from mlflow.tracking import MlflowClient
+                MlflowClient().transition_model_version_stage(
+                    self.model_name, self.champion_v, "Archived",
+                    archive_existing_versions=False,
+                )
+            return {
+                "action":          "promoted",
+                "new_production_v": self.challenger_v,
+                "old_champion_v":   self.champion_v,
+                "challenger_win_rate": rate,
+            }
+        if self.challenger_v:
+            from mlflow.tracking import MlflowClient
+            MlflowClient().transition_model_version_stage(
+                self.model_name, self.challenger_v, "Archived",
+                archive_existing_versions=False,
+            )
+        return {
+            "action":          "retained",
+            "production_v":    self.champion_v,
+            "challenger_v":    self.challenger_v,
+            "challenger_win_rate": rate,
+        }
 
 
-# ── Retraining orchestrator ────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Main Retraining Pipeline
+# ─────────────────────────────────────────────────────────────────────────────
 
 class RetrainingPipeline:
     """
-    Orchestrates full retrain → evaluate → register → (optionally promote) cycle.
-    Called by Airflow DAG; results logged to MLflow.
+    End-to-end automated retraining orchestrator.
+    Steps: drift check → data prep → train challenger → A/B eval → promote/archive.
     """
 
-    def __init__(self, model_type: ModelType, dry_run: bool = False):
-        self.model_type = model_type
-        self.dry_run    = dry_run
+    def __init__(self, model_type: str) -> None:
+        """
+        model_type: 'precipitation_nowcast' | 'seasonal_forecast' | 'land_cover_cnn'
+        """
+        if model_type not in MODEL_REGISTRY_NAMES:
+            raise ValueError(f"Unknown model_type: {model_type}")
+        self.model_type    = model_type
+        self.model_name    = MODEL_REGISTRY_NAMES[model_type]
+        self.drift_detector = DataDriftDetector()
+        self.cc_manager    = ChampionChallengerManager(self.model_name)
 
-    def run(self, reference_date: Optional[datetime] = None) -> Dict[str, Any]:
-        ref = reference_date or datetime.utcnow()
-        run_name = f"retrain_{self.model_type}_{ref.strftime('%Y%m%d_%H%M')}"
-
-        logger.info("Starting retraining: %s | %s", self.model_type, run_name)
-
-        experiment_map = {
-            ModelType.XGB_PRECIP:    "precipitation_nowcasting",
-            ModelType.PROPHET:       "seasonal_forecasting",
-            ModelType.CNN_LANDCOVER: "satellite_classification",
-            ModelType.CNN_CLOUD:     "satellite_classification",
-            ModelType.LSTM_STREAM:   "streamflow_forecasting",
+    def run(
+        self,
+        new_data: pd.DataFrame,
+        reference_data: pd.DataFrame,
+        force_retrain: bool = False,
+    ) -> Dict[str, Any]:
+        """Full retraining cycle. Returns pipeline execution summary."""
+        setup_mlflow()
+        summary: Dict[str, Any] = {
+            "model_type":  self.model_type,
+            "model_name":  self.model_name,
+            "started_at":  datetime.utcnow().isoformat(),
         }
 
-        with ModelTracker(experiment_map[self.model_type], run_name) as tracker:
-            # 1. Load data
-            try:
-                X_train, y_train = load_training_window(self.model_type, end_date=ref)
-                X_val,   y_val   = load_validation_window(self.model_type, end_date=ref)
-            except NotImplementedError:
-                logger.error("DATA-FLOW not connected — skipping retrain")
-                return {"status": "skipped", "reason": "data_not_available"}
+        # ── 1. Drift detection ─────────────────────────────────────────────
+        self.drift_detector.fit(reference_data)
+        drift_report = self.drift_detector.detect(new_data)
+        summary["drift"] = drift_report
 
-            # 2. Train
-            model = self._build_and_train(X_train, y_train)
+        if not drift_report["should_retrain"] and not force_retrain:
+            summary["action"]     = "skipped"
+            summary["reason"]     = "No significant drift detected"
+            summary["finished_at"] = datetime.utcnow().isoformat()
+            logger.info(f"Retraining skipped for {self.model_type}: no drift")
+            return summary
 
-            # 3. Evaluate
-            metrics = evaluate_model(model, X_val, y_val, self.model_type)
-            tracker.log_metrics(metrics)
-            logger.info("Evaluation metrics: %s", json.dumps(metrics, indent=2))
+        # ── 2. Load champion ───────────────────────────────────────────────
+        champion_v = self.cc_manager.load_champion()
+        summary["champion_version"] = champion_v
 
-            # 4. Quality gate
-            if not meets_threshold(metrics, self.model_type):
-                logger.warning("Model did NOT pass quality gate — not registering")
-                return {"status": "rejected", "metrics": metrics}
+        # ── 3. Train challenger ────────────────────────────────────────────
+        run_id, challenger_metrics = self._train_challenger(new_data)
+        summary["challenger_run_id"] = run_id
+        summary["challenger_metrics"] = challenger_metrics
 
-            if self.dry_run:
-                logger.info("Dry run — skipping registration")
-                return {"status": "dry_run", "metrics": metrics}
+        # ── 4. A/B evaluation ──────────────────────────────────────────────
+        champion_metrics  = self._load_champion_metrics(champion_v)
+        n_eval_rounds     = 5
+        metric_key        = self._primary_metric()
 
-            # 5. Register as Staging
-            model_name = self._registry_name()
-            run_uri    = tracker.log_model(model, artifact_path="model")
-            version    = register_model(run_uri, model_name,
-                                        description=f"Auto-retrained {ref.date()}")
-            tracker.log_params({"registered_version": version, "model_name": model_name})
+        for _ in range(n_eval_rounds):
+            self.cc_manager.evaluate_round(
+                champion_metrics.get(metric_key, 9999),
+                challenger_metrics.get(metric_key, 9999),
+                metric_name=metric_key,
+            )
 
-            return {
-                "status":  "registered",
-                "version": version,
-                "metrics": metrics,
-                "run_id":  tracker.run_id,
-            }
+        # ── 5. Promote / archive ───────────────────────────────────────────
+        result = self.cc_manager.finalize()
+        summary.update(result)
+        summary["finished_at"] = datetime.utcnow().isoformat()
+        logger.info(f"Retraining pipeline done: {result}")
+        return summary
 
-    def _build_and_train(self, X_train: pd.DataFrame, y_train: Any) -> Any:
-        if self.model_type == ModelType.XGB_PRECIP:
-            m = PrecipNowcastXGB()
-            m.fit(X_train, y_train)
-            return m
-        if self.model_type == ModelType.PROPHET:
-            m = SeasonalProphet()
-            m.fit(X_train)
-            return m
-        if self.model_type in (ModelType.CNN_LANDCOVER, ModelType.CNN_CLOUD):
-            task = "land_cover" if self.model_type == ModelType.CNN_LANDCOVER else "cloud_mask"
-            m = SatelliteClassifierCNN(task=task)
-            return m  # CNN training loop implemented in train_cnn.py
-        raise NotImplementedError(f"No trainer for {self.model_type}")
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _registry_name(self) -> str:
-        return {
-            ModelType.XGB_PRECIP:    ModelRegistry.PRECIP_NOWCAST_XGB,
-            ModelType.PROPHET:       ModelRegistry.SEASONAL_PROPHET,
-            ModelType.CNN_LANDCOVER: ModelRegistry.LAND_COVER_CNN,
-            ModelType.CNN_CLOUD:     ModelRegistry.CLOUD_MASK_CNN,
-            ModelType.LSTM_STREAM:   ModelRegistry.STREAMFLOW_LSTM,
-        }[self.model_type]
+    def _primary_metric(self) -> str:
+        return {"precipitation_nowcast": "val_rmse",
+                "seasonal_forecast":     "cv_rmse",
+                "land_cover_cnn":        "val_accuracy"}[self.model_type]
 
+    def _train_challenger(
+        self, new_data: pd.DataFrame
+    ) -> Tuple[str, Dict[str, float]]:
+        """Instantiate and train the appropriate model type."""
+        from .models import (
+            LandCoverCNN,
+            PrecipitationNowcastModel,
+            SeasonalForecastModel,
+        )
+        run_name = f"{self.model_type}_challenger_{datetime.utcnow():%Y%m%d_%H%M%S}"
 
-# ── Entry point for Airflow DAG ────────────────────────────────────────────────
+        if self.model_type == "precipitation_nowcast":
+            model = PrecipitationNowcastModel()
+            half  = len(new_data) // 2
+            feat_cols = [c for c in new_data.columns if c != "target"]
+            metrics = model.train(
+                new_data[feat_cols][:half],  new_data["target"][:half],
+                new_data[feat_cols][half:],  new_data["target"][half:],
+                run_name=run_name,
+            )
+            return model.version, metrics
 
-def run_scheduled_retrain(model_type_str: str, **kwargs) -> Dict[str, Any]:
-    """Airflow PythonOperator entry point."""
-    model_type = ModelType(model_type_str)
-    pipeline   = RetrainingPipeline(model_type)
-    result     = pipeline.run()
-    logger.info("Retrain result: %s", result)
-    return result
+        if self.model_type == "seasonal_forecast":
+            model = SeasonalForecastModel()
+            model.fit(new_data, run_name=run_name)
+            metrics = model.cross_validate()
+            return model.version, metrics
+
+        if self.model_type == "land_cover_cnn":
+            model = LandCoverCNN()
+            half  = len(new_data) // 2
+            X_key = "image_patch"
+            y_key = "label"
+            metrics = model.train(
+                np.stack(new_data[X_key][:half]),
+                new_data[y_key][:half].values,
+                np.stack(new_data[X_key][half:]),
+                new_data[y_key][half:].values,
+                run_name=run_name,
+            )
+            return model.version, metrics
+
+        raise ValueError(f"Unknown model_type: {self.model_type}")
+
+    def _load_champion_metrics(
+        self, version: Optional[str]
+    ) -> Dict[str, float]:
+        """Fetch champion metrics from MLflow registry."""
+        if not version:
+            return {self._primary_metric(): 9999.0}
+        try:
+            from mlflow.tracking import MlflowClient
+            client = MlflowClient()
+            mv     = client.get_model_version(self.model_name, version)
+            run    = client.get_run(mv.run_id)
+            return run.data.metrics
+        except Exception as exc:
+            logger.warning(f"Could not load champion metrics: {exc}")
+            return {self._primary_metric(): 9999.0}
