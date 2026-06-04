@@ -100,6 +100,12 @@ app.add_middleware(
 from src.api.hydrologis_router import router as hydrologis_router
 app.include_router(hydrologis_router)
 
+# ANALYTICA inference router (Sprint 6 H1)
+# Endpoints: POST /predict/{precipitation,seasonal,landcover,streamflow,climate}
+# Health:    GET  /predict/healthz/inference
+from src.serving.inference_api import router as inference_router
+app.include_router(inference_router)
+
 
 # Custom OpenAPI schema with partner metadata
 @app.on_event("startup")
