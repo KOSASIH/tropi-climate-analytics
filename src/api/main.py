@@ -95,6 +95,11 @@ app.add_middleware(
     expose_headers=["X-RateLimit-Limit", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
 )
 
+# HYDROLOGIS hydrological model router
+# NOTE: _REGISTRY is instantiated inside hydrologis_router.py — not re-instantiated here.
+from src.api.hydrologis_router import router as hydrologis_router
+app.include_router(hydrologis_router)
+
 
 # Custom OpenAPI schema with partner metadata
 @app.on_event("startup")
