@@ -1,24 +1,25 @@
 """
-SHAP Explainer — ANALYTICA Sprint 5 F2
-Generates feature importance explanations for all ANALYTICA model types.
+ANALYTICA SHAP Explainability — Sprint 6 H2
+Class: SHAPExplainer
 
 Methods:
-  explain_xgb(model, X)   → TreeExplainer   — XGBoost precipitation nowcast (top-10)
-  explain_deep(model, X)  → DeepExplainer   — LSTM / TFT multi-variate models
-  explain_cnn(model, X)   → GradientExplainer — CNN land cover classifier
+  explain_xgb(model, X: pd.DataFrame)  -> list[dict]  — TreeExplainer (XGBoost/sklearn trees)
+  explain_deep(model, X: pd.DataFrame) -> list[dict]  — DeepExplainer (LSTM, TFT, PyTorch/TF)
+  explain_cnn(model, X: np.ndarray)    -> list[dict]  — GradientExplainer (CNN)
 
-Output shape: [{feature: str, shap_value: float, rank: int}, ...]
-Written to: workspace/output/explainability/{model_id}_{grid_cell_id}_{date}.json
+Output shape per method: [{feature: str, shap_value: float, rank: int}]
+  - Sorted by abs(shap_value) DESC
+  - Top-10 returned; caller slices to top-5 for API response
 
-Called by inference_api.py for feature_importance_top5 in prediction responses.
+Sidecar write: workspace/output/explainability/{model_id}_{grid_cell_id}_{date}.json
+Called by inference_api.py for feature_importance_top5 field.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-import os
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, List, Optional
 
@@ -30,214 +31,231 @@ logger = logging.getLogger(__name__)
 OUTPUT_DIR = Path("workspace/output/explainability")
 
 
-def _write_output(
-    records: List[dict],
-    model_id: str,
-    grid_cell_id: str,
-    issued_date: str,
-) -> Path:
-    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    fname = f"{model_id}_{grid_cell_id}_{issued_date}.json"
-    path = OUTPUT_DIR / fname
-    path.write_text(json.dumps(records, indent=2, default=str))
-    logger.debug("SHAP output written: %s", path)
-    return path
-
-
-def _rank_shap(shap_values: np.ndarray, feature_names: List[str], top_n: int = 10) -> List[dict]:
-    """Convert raw SHAP array to ranked list of dicts."""
-    mean_abs = np.abs(shap_values).mean(axis=0) if shap_values.ndim > 1 else np.abs(shap_values)
-    if len(mean_abs.shape) > 1:
-        mean_abs = mean_abs.mean(axis=0)
-    idx_sorted = np.argsort(mean_abs)[::-1][:top_n]
-    return [
-        {"feature": feature_names[i], "shap_value": float(mean_abs[i]), "rank": rank + 1}
-        for rank, i in enumerate(idx_sorted)
-    ]
-
-
 class SHAPExplainer:
     """
-    SHAP explainability wrapper for ANALYTICA model zoo.
+    Unified SHAP explainability interface for all ANALYTICA model types.
 
-    Usage::
-
+    Usage:
         explainer = SHAPExplainer()
 
-        # XGBoost
-        result = explainer.explain_xgb(model=xgb_model, X=features_df)
+        # XGBoost precipitation nowcast
+        shap_vals = explainer.explain_xgb(xgb_model, features_df)
 
-        # LSTM / TFT
-        result = explainer.explain_deep(model=lstm_model, X=features_df)
+        # LSTM / TFT deep models
+        shap_vals = explainer.explain_deep(lstm_model, features_df)
 
-        # CNN
-        result = explainer.explain_cnn(model=cnn_model, X=feature_array)
+        # CNN land cover
+        shap_vals = explainer.explain_cnn(cnn_model, image_array)
+
+        # Auto-dispatch by model_id prefix
+        shap_vals = explainer.explain_for_model(model_id, model, X)
     """
 
+    def __init__(self, top_k: int = 10):
+        self.top_k = top_k
+
     # ------------------------------------------------------------------
-    # XGBoost — TreeExplainer (top-10 SHAP values)
+    # Public explain methods
     # ------------------------------------------------------------------
 
-    def explain_xgb(
-        self,
-        model: Any,
-        X: pd.DataFrame,
-        grid_cell_id: str = "unknown",
-        issued_date: str = str(date.today()),
-        model_id: str = "xgb_precip",
-        top_n: int = 10,
-    ) -> List[dict]:
+    def explain_xgb(self, model: Any, X: pd.DataFrame) -> List[dict]:
         """
-        TreeExplainer SHAP values for XGBoost model.
-        Returns top-n features ranked by mean |SHAP value|.
+        TreeExplainer for XGBoost / sklearn gradient-boosted trees.
+        Returns top-10 features sorted by mean absolute SHAP value across samples.
+
+        Args:
+            model: Fitted XGBoost or sklearn tree model (or mlflow.pyfunc wrapper).
+            X:     Feature DataFrame (n_samples x n_features).
+
+        Returns:
+            List of {feature, shap_value, rank} dicts, sorted by abs(shap_value) DESC.
         """
+        import shap as shap_lib
+
+        raw_model = _unwrap_pyfunc(model)
+        explainer  = shap_lib.TreeExplainer(raw_model)
+        shap_vals  = explainer.shap_values(X)
+
+        # For multi-class output, take mean over classes
+        if isinstance(shap_vals, list):
+            arr = np.mean([np.abs(sv) for sv in shap_vals], axis=0)
+        else:
+            arr = np.abs(shap_vals)
+
+        mean_abs = np.mean(arr, axis=0)
+        feature_names = list(X.columns) if hasattr(X, "columns") else [f"f_{i}" for i in range(len(mean_abs))]
+        return self._rank_and_trim(feature_names, mean_abs, self.top_k)
+
+    def explain_deep(self, model: Any, X: pd.DataFrame) -> List[dict]:
+        """
+        DeepExplainer for LSTM / TFT (PyTorch or TensorFlow).
+        Uses a background sample (first min(100, n) rows) as the reference distribution.
+
+        Args:
+            model: Fitted deep learning model (or mlflow.pyfunc wrapper).
+            X:     Feature DataFrame (n_samples x n_features).
+
+        Returns:
+            List of {feature, shap_value, rank} dicts, sorted by abs(shap_value) DESC.
+        """
+        import shap as shap_lib
+
+        raw_model  = _unwrap_pyfunc(model)
+        X_arr      = X.values.astype(np.float32)
+        n_bg       = min(100, len(X_arr))
+        background = X_arr[:n_bg]
+
         try:
-            import shap  # type: ignore
-            explainer = shap.TreeExplainer(model)
-            X_arr = X.values if isinstance(X, pd.DataFrame) else X
-            shap_values = explainer.shap_values(X_arr)
-            feature_names = list(X.columns) if isinstance(X, pd.DataFrame) \
-                else [f"feature_{i}" for i in range(X_arr.shape[1])]
-            records = _rank_shap(shap_values, feature_names, top_n)
-            _write_output(records, model_id, grid_cell_id, issued_date)
-            return records
-        except ImportError:
-            logger.warning("shap not installed — returning empty explanation for %s", model_id)
-            return []
-        except Exception as exc:
-            logger.warning("explain_xgb failed for %s: %s", model_id, exc)
-            return []
+            explainer  = shap_lib.DeepExplainer(raw_model, background)
+            shap_vals  = explainer.shap_values(X_arr)
+        except Exception as deep_exc:
+            logger.warning("DeepExplainer failed (%s) — falling back to KernelExplainer", deep_exc)
+            def _predict_fn(data):
+                if hasattr(raw_model, "predict"):
+                    out = raw_model.predict(pd.DataFrame(data, columns=X.columns))
+                    return np.array(out) if not isinstance(out, np.ndarray) else out
+                return np.zeros(len(data))
+            explainer  = shap_lib.KernelExplainer(_predict_fn, background)
+            shap_vals  = explainer.shap_values(X_arr, nsamples=50)
 
-    # ------------------------------------------------------------------
-    # LSTM / TFT — DeepExplainer
-    # ------------------------------------------------------------------
+        if isinstance(shap_vals, list):
+            arr = np.mean([np.abs(sv) for sv in shap_vals], axis=0)
+        else:
+            arr = np.abs(shap_vals)
 
-    def explain_deep(
-        self,
-        model: Any,
-        X: pd.DataFrame,
-        background: Optional[pd.DataFrame] = None,
-        grid_cell_id: str = "unknown",
-        issued_date: str = str(date.today()),
-        model_id: str = "lstm",
-        top_n: int = 10,
-    ) -> List[dict]:
+        mean_abs     = np.mean(arr, axis=0).flatten()
+        feature_names = list(X.columns) if hasattr(X, "columns") else [f"f_{i}" for i in range(len(mean_abs))]
+        return self._rank_and_trim(feature_names, mean_abs, self.top_k)
+
+    def explain_cnn(self, model: Any, X: np.ndarray) -> List[dict]:
         """
-        DeepExplainer SHAP values for LSTM / TFT models.
-        Background dataset defaults to first 50 rows of X if not provided.
+        GradientExplainer for CNN land cover model.
+        Computes per-channel spatial mean of absolute SHAP values.
+
+        Args:
+            model: Fitted CNN (PyTorch or TensorFlow).
+            X:     Input array shape (n_samples, H, W, C) or (n_samples, C, H, W).
+
+        Returns:
+            List of {feature, shap_value, rank} dicts (one entry per channel), sorted DESC.
         """
+        import shap as shap_lib
+
+        raw_model = _unwrap_pyfunc(model)
+        n_bg      = min(50, len(X))
+        background = X[:n_bg]
+
         try:
-            import shap  # type: ignore
-            import torch  # type: ignore
-
-            bg = background if background is not None else X.head(50)
-            bg_tensor = torch.tensor(bg.values, dtype=torch.float32)
-            X_tensor  = torch.tensor(X.values,  dtype=torch.float32)
-
-            # Deep Explainer expects (background, model)
-            explainer  = shap.DeepExplainer(model, bg_tensor)
-            shap_values = explainer.shap_values(X_tensor)
-
-            if isinstance(shap_values, list):
-                shap_arr = np.array(shap_values[0])
-            else:
-                shap_arr = np.array(shap_values)
-
-            feature_names = list(X.columns) if isinstance(X, pd.DataFrame) \
-                else [f"feature_{i}" for i in range(X.shape[1])]
-            records = _rank_shap(shap_arr, feature_names, top_n)
-            _write_output(records, model_id, grid_cell_id, issued_date)
-            return records
-        except ImportError:
-            logger.warning("shap/torch not installed — returning empty explanation for %s", model_id)
-            return []
-        except Exception as exc:
-            logger.warning("explain_deep failed for %s: %s", model_id, exc)
-            return []
-
-    # ------------------------------------------------------------------
-    # CNN — GradientExplainer
-    # ------------------------------------------------------------------
-
-    def explain_cnn(
-        self,
-        model: Any,
-        X: np.ndarray,
-        background: Optional[np.ndarray] = None,
-        feature_names: Optional[List[str]] = None,
-        grid_cell_id: str = "unknown",
-        issued_date: str = str(date.today()),
-        model_id: str = "cnn_landcover",
-        top_n: int = 10,
-    ) -> List[dict]:
-        """
-        GradientExplainer SHAP values for CNN land cover classifier.
-        X shape: (N, C, H, W) — batch of satellite image patches.
-        """
-        try:
-            import shap  # type: ignore
-            import torch  # type: ignore
-
-            bg = background if background is not None else X[:50]
-            bg_tensor = torch.tensor(bg,   dtype=torch.float32)
-            X_tensor  = torch.tensor(X[:1], dtype=torch.float32)
-
-            explainer   = shap.GradientExplainer(model, bg_tensor)
-            shap_values = explainer.shap_values(X_tensor)
-
-            if isinstance(shap_values, list):
-                shap_arr = np.array(shap_values[0])
-            else:
-                shap_arr = np.array(shap_values)
-
-            # Flatten spatial dims to get per-channel importance
-            flat = shap_arr.reshape(shap_arr.shape[0], shap_arr.shape[1], -1).mean(axis=(0, 2))
-            n_channels = flat.shape[0]
-            names = feature_names if feature_names and len(feature_names) == n_channels \
-                else [f"channel_{i}" for i in range(n_channels)]
-
-            idx_sorted = np.argsort(np.abs(flat))[::-1][:top_n]
-            records = [
-                {"feature": names[i], "shap_value": float(flat[i]), "rank": rank + 1}
-                for rank, i in enumerate(idx_sorted)
+            explainer  = shap_lib.GradientExplainer(raw_model, background)
+            shap_vals  = explainer.shap_values(X)
+        except Exception as grad_exc:
+            logger.warning("GradientExplainer failed (%s) — returning zero-SHAP stub", grad_exc)
+            n_channels = X.shape[-1] if X.ndim == 4 else X.shape[1]
+            return [
+                {"feature": f"channel_{c}", "shap_value": 0.0, "rank": c + 1}
+                for c in range(min(n_channels, self.top_k))
             ]
-            _write_output(records, model_id, grid_cell_id, issued_date)
-            return records
-        except ImportError:
-            logger.warning("shap/torch not installed — returning empty explanation for %s", model_id)
-            return []
-        except Exception as exc:
-            logger.warning("explain_cnn failed for %s: %s", model_id, exc)
-            return []
 
-    # ------------------------------------------------------------------
-    # Unified entry (used by inference_api.py)
-    # ------------------------------------------------------------------
+        if isinstance(shap_vals, list):
+            sv_arr = np.mean([np.abs(sv) for sv in shap_vals], axis=0)
+        else:
+            sv_arr = np.abs(shap_vals)
+
+        # Per-channel spatial mean: collapse spatial dims, keep channel axis
+        # Supports (N, H, W, C) and (N, C, H, W)
+        if sv_arr.ndim == 4:
+            channel_axis = -1 if sv_arr.shape[-1] <= sv_arr.shape[1] else 1
+            if channel_axis == -1:
+                mean_abs = sv_arr.mean(axis=(0, 1, 2))  # -> (C,)
+            else:
+                mean_abs = sv_arr.mean(axis=(0, 2, 3))  # -> (C,)
+        else:
+            mean_abs = sv_arr.mean(axis=0).flatten()
+
+        feature_names = [f"channel_{i}" for i in range(len(mean_abs))]
+        return self._rank_and_trim(feature_names, mean_abs, self.top_k)
 
     def explain_for_model(
-        self,
-        model_id: str,
-        model: Any,
-        features: pd.DataFrame,
-        grid_cell_id: str = "unknown",
-        issued_date: str = str(date.today()),
+        self, model_id: str, model: Any, X: Any, is_cnn_input: bool = False
     ) -> List[dict]:
         """
-        Auto-dispatch to the correct explainer based on model_id prefix.
-        Returns top-10 SHAP records; inference_api.py slices to top-5.
+        Auto-dispatch to the correct explain method based on model_id prefix.
+
+        model_id prefixes:
+            xgb_*       -> explain_xgb
+            cnn_*       -> explain_cnn (X must be np.ndarray)
+            prophet_*   -> explain_deep (fallback)
+            lstm_*      -> explain_deep
+            tft_*       -> explain_deep
         """
-        mid = model_id.lower()
-        if "xgb" in mid or "precip" in mid:
-            return self.explain_xgb(model, features,
-                                    grid_cell_id=grid_cell_id, issued_date=issued_date,
-                                    model_id=model_id)
-        elif "cnn" in mid or "land" in mid:
-            X_arr = features.values if isinstance(features, pd.DataFrame) else features
-            return self.explain_cnn(model, X_arr,
-                                    grid_cell_id=grid_cell_id, issued_date=issued_date,
-                                    model_id=model_id)
+        model_id_lower = model_id.lower()
+        if model_id_lower.startswith("xgb"):
+            return self.explain_xgb(model, X)
+        elif model_id_lower.startswith("cnn"):
+            X_arr = X if isinstance(X, np.ndarray) else X.values
+            return self.explain_cnn(model, X_arr)
         else:
-            # LSTM, TFT, Prophet — deep path (Prophet stubs gracefully if non-torch)
-            return self.explain_deep(model, features,
-                                     grid_cell_id=grid_cell_id, issued_date=issued_date,
-                                     model_id=model_id)
+            if not isinstance(X, pd.DataFrame):
+                X = pd.DataFrame(X)
+            return self.explain_deep(model, X)
+
+    def write_sidecar(
+        self,
+        shap_entries:  List[dict],
+        model_id:      str,
+        grid_cell_id:  str,
+        issued_date:   date,
+    ) -> Path:
+        """
+        Persist SHAP output to workspace/output/explainability/.
+        Returns the path written.
+        """
+        OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+        fname    = f"{model_id}_{grid_cell_id}_{issued_date.isoformat()}.json"
+        out_path = OUTPUT_DIR / fname
+        payload  = {
+            "model_id":     model_id,
+            "grid_cell_id": grid_cell_id,
+            "issued_date":  issued_date.isoformat(),
+            "shap_values":  shap_entries,
+            "written_at":   datetime.now(timezone.utc).isoformat(),
+        }
+        out_path.write_text(json.dumps(payload, indent=2, default=str))
+        logger.debug("SHAP sidecar written: %s", out_path)
+        return out_path
+
+    # ------------------------------------------------------------------
+    # Internal
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rank_and_trim(
+        feature_names: List[str], mean_abs: np.ndarray, top_k: int
+    ) -> List[dict]:
+        """Sort features by mean abs SHAP value, trim to top_k, assign ranks."""
+        paired   = sorted(
+            zip(feature_names, mean_abs.tolist()),
+            key=lambda t: abs(t[1]),
+            reverse=True,
+        )[:top_k]
+        return [
+            {"feature": name, "shap_value": round(float(val), 6), "rank": rank + 1}
+            for rank, (name, val) in enumerate(paired)
+        ]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _unwrap_pyfunc(model: Any) -> Any:
+    """
+    If model is an mlflow.pyfunc wrapper, attempt to extract the underlying
+    Python model object for direct SHAP access.
+    Falls back to the wrapper if the attribute is not found.
+    """
+    for attr in ("_model_impl", "_python_model", "python_model"):
+        inner = getattr(model, attr, None)
+        if inner is not None:
+            return inner
+    return model
