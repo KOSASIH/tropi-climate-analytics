@@ -1,0 +1,44 @@
+# NodePool: spot-batch
+# Target: non-critical batch jobs, satellite tile preprocessing, backfills
+# Pods must tolerate: dedicated=spot-batch:NoSchedule
+apiVersion: karpenter.sh/v1beta1
+kind: NodePool
+metadata:
+  name: spot-batch
+spec:
+  template:
+    metadata:
+      labels:
+        role: batch
+        workload: spot-batch
+        node.kubernetes.io/workload-type: spot
+        karpenter.sh/capacity-type: spot
+    spec:
+      nodeClassRef:
+        apiVersion: karpenter.k8s.aws/v1beta1
+        kind: EC2NodeClass
+        name: tropi-default
+      taints:
+        - key: dedicated
+          value: spot-batch
+          effect: NoSchedule
+      requirements:
+        - key: karpenter.sh/capacity-type
+          operator: In
+          values: ["spot"]
+        - key: node.kubernetes.io/instance-type
+          operator: In
+          values: ["c5.4xlarge", "c5.2xlarge", "c5a.4xlarge", "c5n.4xlarge", "m5.4xlarge", "c6i.4xlarge"]
+        - key: topology.kubernetes.io/zone
+          operator: In
+          values: ["ap-southeast-3a", "ap-southeast-3b", "ap-southeast-3c"]
+        - key: kubernetes.io/arch
+          operator: In
+          values: ["amd64"]
+  limits:
+    cpu: "320"
+    memory: 640Gi
+  disruption:
+    consolidationPolicy: WhenUnderutilized
+    consolidateAfter: 10s
+    expireAfter: 168h
