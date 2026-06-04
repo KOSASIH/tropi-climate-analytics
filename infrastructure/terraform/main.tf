@@ -33,7 +33,7 @@ provider "aws" {
   }
 }
 
-# ─── VPC ─────────────────────────────────────────────────────
+# ─── VPC ────────────────────────────────────────────────────────────────
 module "vpc" {
   source      = "./modules/vpc"
   environment = var.environment
@@ -42,7 +42,7 @@ module "vpc" {
   project     = var.project_name
 }
 
-# ─── ECS Cluster ─────────────────────────────────────────────
+# ─── ECS Cluster ────────────────────────────────────────────────────────
 module "ecs" {
   source             = "./modules/ecs"
   environment        = var.environment
@@ -52,7 +52,7 @@ module "ecs" {
   public_subnet_ids  = module.vpc.public_subnet_ids
 }
 
-# ─── RDS Aurora PostgreSQL + PostGIS ─────────────────────────
+# ─── RDS Aurora PostgreSQL + PostGIS ────────────────────────────────────
 module "rds" {
   source             = "./modules/rds"
   environment        = var.environment
@@ -64,9 +64,9 @@ module "rds" {
   azs                = var.availability_zones
 }
 
-# ─── ElastiCache Redis ───────────────────────────────────────
+# ─── ElastiCache Redis ──────────────────────────────────────────────────
 module "elasticache" {
-  source     = "./modules/elasticache"
+  source      = "./modules/elasticache"
   environment = var.environment
   project     = var.project_name
   vpc_id      = module.vpc.vpc_id
@@ -74,7 +74,7 @@ module "elasticache" {
   node_type   = var.redis_node_type
 }
 
-# ─── MSK Kafka ───────────────────────────────────────────────
+# ─── MSK Kafka ──────────────────────────────────────────────────────────
 module "msk" {
   source             = "./modules/msk"
   environment        = var.environment
@@ -86,9 +86,17 @@ module "msk" {
   number_of_brokers  = 3
 }
 
-# ─── S3 Buckets ──────────────────────────────────────────────
+# ─── S3 Buckets ─────────────────────────────────────────────────────────
 module "s3" {
   source      = "./modules/s3"
+  environment = var.environment
+  project     = var.project_name
+  aws_region  = var.aws_region
+}
+
+# ─── Secrets Manager ────────────────────────────────────────────────────
+module "secrets" {
+  source      = "./modules/secrets"
   environment = var.environment
   project     = var.project_name
   aws_region  = var.aws_region

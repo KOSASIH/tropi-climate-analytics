@@ -59,3 +59,18 @@ output "s3_backup_bucket" {
   description = "S3 bucket for database backups"
   value       = module.s3.backup_bucket
 }
+
+output "secrets_kms_key_arn" {
+  description = "KMS key ARN used for Secrets Manager encryption"
+  value       = module.secrets.kms_key_arn
+}
+
+output "airflow_secrets_iam_policy_arn" {
+  description = "IAM policy ARN granting Airflow workers read access to DAG secrets"
+  value       = module.secrets.airflow_secrets_policy_arn
+}
+
+output "ecs_secrets_iam_policy_arn" {
+  description = "IAM policy ARN granting ECS task roles read access to all runtime secrets"
+  value       = module.secrets.ecs_secrets_policy_arn
+}
