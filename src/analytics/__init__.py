@@ -1,57 +1,50 @@
 """
-Tropi-Climate-Analytics analytics package.
-ML models, feature engineering, MLflow tracking, and SHAP explainability.
+ANALYTICA — src/analytics package
+Sprint 0: MLflow setup, feature engineering, ML models, retraining, explainability.
 """
 
+from .explainability import ModelCardGenerator, ModelExplainer
+from .feature_engineering import FeatureEngineeringPipeline
 from .mlflow_setup import (
-    setup_experiments,
-    ModelTracker,
-    register_model,
+    MODEL_REGISTRY_NAMES,
+    MLFLOW_EXPERIMENT_NAME,
+    MLFLOW_TRACKING_URI,
+    get_latest_model_version,
     promote_model,
-    get_production_model,
-    list_model_versions,
-    ModelRegistry,
+    setup_mlflow,
 )
-from .feature_engineering import (
-    FeatureMatrix,
-    compute_rolling_stats,
-    compute_lag_features,
-    add_calendar_features,
-    merge_gpm_bmkg,
-    compute_spi,
-    compute_soil_wetness_index,
-)
-from .models import (
-    PrecipNowcastXGB,
-    SeasonalProphet,
-    SatelliteClassifierCNN,
-)
+from .models import LandCoverCNN, PrecipitationNowcastModel, SeasonalForecastModel
 from .retraining_pipeline import (
+    ChampionChallengerManager,
+    DataDriftDetector,
+    RETRAINING_SCHEDULE,
     RetrainingPipeline,
-    ABTestManager,
-    ModelType,
-    RETRAIN_SCHEDULES,
-    run_scheduled_retrain,
-)
-from .explainability import (
-    ModelExplainer,
-    batch_explain_predictions,
 )
 
 __all__ = [
     # MLflow
-    "setup_experiments", "ModelTracker", "register_model", "promote_model",
-    "get_production_model", "list_model_versions", "ModelRegistry",
+    "setup_mlflow",
+    "get_latest_model_version",
+    "promote_model",
+    "MODEL_REGISTRY_NAMES",
+    "MLFLOW_TRACKING_URI",
+    "MLFLOW_EXPERIMENT_NAME",
     # Feature engineering
-    "FeatureMatrix", "compute_rolling_stats", "compute_lag_features",
-    "add_calendar_features", "merge_gpm_bmkg", "compute_spi", "compute_soil_wetness_index",
+    "FeatureEngineeringPipeline",
     # Models
-    "PrecipNowcastXGB", "SeasonalProphet", "SatelliteClassifierCNN",
+    "PrecipitationNowcastModel",
+    "SeasonalForecastModel",
+    "LandCoverCNN",
     # Retraining
-    "RetrainingPipeline", "ABTestManager", "ModelType", "RETRAIN_SCHEDULES",
-    "run_scheduled_retrain",
+    "DataDriftDetector",
+    "ChampionChallengerManager",
+    "RetrainingPipeline",
+    "RETRAINING_SCHEDULE",
     # Explainability
-    "ModelExplainer", "batch_explain_predictions",
+    "ModelExplainer",
+    "ModelCardGenerator",
 ]
 
 __version__ = "0.1.0"
+__sprint__  = "Sprint 0"
+__agent__   = "ANALYTICA"
