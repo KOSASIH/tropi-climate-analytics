@@ -1,0 +1,50 @@
+# ============================================================
+# ETL Worker HPA — min 1, max 5 pods
+# Scales on Kafka consumer lag (custom metric)
+# ============================================================
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: tropi-etl-worker-hpa
+  namespace: tropi-climate
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: tropi-etl-worker
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 75
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    # Scale on Kafka consumer lag via Prometheus Adapter
+    - type: Pods
+      pods:
+        metric:
+          name: kafka_consumer_lag
+        target:
+          type: AverageValue
+          averageValue: "5000"   # scale up when avg lag > 5000 messages
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 600   # 10-min cooldown for batch jobs
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 300

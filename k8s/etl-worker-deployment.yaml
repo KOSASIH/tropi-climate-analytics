@@ -1,0 +1,76 @@
+# ============================================================
+# ETL Worker Deployment — satellite data ingestion workers
+# Min 1 replica, scales to 5 via HPA
+# ============================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tropi-etl-worker
+  namespace: tropi-climate
+  labels:
+    app: tropi-etl-worker
+    version: v1
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tropi-etl-worker
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app: tropi-etl-worker
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+        prometheus.io/path: "/metrics"
+    spec:
+      # Scale-in protection during active Kafka consumption
+      terminationGracePeriodSeconds: 300   # 5 min graceful shutdown for long ETL tasks
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: tropi-etl-worker
+      containers:
+        - name: etl-worker
+          image: ghcr.io/kosasih/tropi-climate-analytics/etl-worker:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9090
+              name: metrics
+          envFrom:
+            - secretRef:
+                name: tropi-etl-secrets
+          env:
+            - name: WORKER_TYPE
+              value: "satellite-ingestion"
+            - name: KAFKA_GROUP_ID
+              value: "etl-workers"
+            - name: LOG_LEVEL
+              value: "INFO"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import sys; sys.exit(0)"]
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            failureThreshold: 3
+          readinessProbe:
+            exec:
+              command: ["python", "-c", "import sys; sys.exit(0)"]
+            initialDelaySeconds: 10
+            periodSeconds: 10

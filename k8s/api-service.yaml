@@ -1,0 +1,43 @@
+# ============================================================
+# API Service — ClusterIP + external via ALB Ingress
+# ============================================================
+apiVersion: v1
+kind: Service
+metadata:
+  name: tropi-api
+  namespace: tropi-climate
+  labels:
+    app: tropi-api
+spec:
+  selector:
+    app: tropi-api
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
+  type: ClusterIP
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: tropi-api-ingress
+  namespace: tropi-climate
+  annotations:
+    kubernetes.io/ingress.class: alb
+    alb.ingress.kubernetes.io/scheme: internet-facing
+    alb.ingress.kubernetes.io/target-type: ip
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    alb.ingress.kubernetes.io/listen-ports: '[{"HTTPS": 443}]'
+    alb.ingress.kubernetes.io/ssl-policy: ELBSecurityPolicy-TLS13-1-2-2021-06
+spec:
+  rules:
+    - host: api.tropi-climate.id
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: tropi-api
+                port:
+                  number: 80

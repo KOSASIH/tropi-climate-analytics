@@ -1,0 +1,10 @@
+# ============================================================
+# Kubernetes Namespace — Tropi Climate Analytics
+# ============================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tropi-climate
+  labels:
+    app.kubernetes.io/managed-by: cloud-forge
+    environment: production
