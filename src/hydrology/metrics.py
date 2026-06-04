@@ -619,3 +619,88 @@ def record_flash_flood_index(region_id: str, ffi: float) -> None:
     """Set Flash Flood Index gauge for a high-risk region."""
     FLASH_FLOOD_INDEX.labels(region_id=region_id).set(ffi)
     _push_safe()
+
+
+# ===========================================================================
+# Sprint 11: Water Quality, Irrigation, Coastal
+# ===========================================================================
+
+WATER_QUALITY_INDEX = Gauge(
+    "tropi_water_quality_index",
+    "Composite Water Quality Index (0–100) per water body and category (KepMenLH-115/2003).",
+    ["water_body_id", "category"],
+)
+
+IRRIGATION_DEFICIT_MM = Gauge(
+    "tropi_irrigation_deficit_mm",
+    "Net Irrigation Requirement (mm/day) per district and dominant crop (FAO-56 dual Kc).",
+    ["district_id", "crop"],
+)
+
+SALTWATER_INTRUSION_INDEX = Gauge(
+    "tropi_saltwater_intrusion_index",
+    "Saltwater Intrusion Index (dimensionless) per coastal city. "
+    "SII = (Q_tidal / Q_river) × (1 + RSL_anomaly). "
+    "Categories: SAFE<0.3, MODERATE 0.3–0.7, HIGH 0.7–1.2, CRITICAL>1.2.",
+    ["city_id"],
+)
+
+
+def record_water_quality(water_body_id: str, category: str, wqi: float) -> None:
+    """Set Water Quality Index gauge for a water body and category."""
+    WATER_QUALITY_INDEX.labels(water_body_id=water_body_id, category=category).set(wqi)
+    _push_safe()
+
+
+def record_irrigation_deficit(district_id: str, crop: str, nir_mm: float) -> None:
+    """Set Net Irrigation Requirement gauge for a district and crop."""
+    IRRIGATION_DEFICIT_MM.labels(district_id=district_id, crop=crop).set(nir_mm)
+    _push_safe()
+
+
+def record_saltwater_intrusion(city_id: str, sii: float) -> None:
+    """Set Saltwater Intrusion Index gauge for a coastal city."""
+    SALTWATER_INTRUSION_INDEX.labels(city_id=city_id).set(sii)
+    _push_safe()
+
+
+# ── Sprint 11 — Water Quality / Irrigation / Coastal ─────────────────────────
+
+WATER_QUALITY_INDEX = Gauge(
+    "tropi_water_quality_index",
+    "KepMenLH-115/2003 Water Quality Index (0–100) for Indonesian lakes and reservoirs.",
+    ["water_body_id", "category"],
+    registry=_REGISTRY,
+)
+
+IRRIGATION_DEFICIT_MM = Gauge(
+    "tropi_irrigation_deficit_mm",
+    "FAO-56 net irrigation requirement (mm/day) per district and dominant crop.",
+    ["district_id", "crop"],
+    registry=_REGISTRY,
+)
+
+SALTWATER_INTRUSION_INDEX = Gauge(
+    "tropi_saltwater_intrusion_index",
+    "Saltwater Intrusion Index (SII = Q_tidal/Q_river × sea-level-anomaly factor) for coastal cities.",
+    ["city_id"],
+    registry=_REGISTRY,
+)
+
+
+def record_water_quality(water_body_id: str, category: str, wqi: float) -> None:
+    """Set Water Quality Index gauge for a lake or reservoir."""
+    WATER_QUALITY_INDEX.labels(water_body_id=water_body_id, category=category).set(wqi)
+    _push_safe()
+
+
+def record_irrigation_deficit(district_id: str, crop: str, nir_mm: float) -> None:
+    """Set net irrigation requirement gauge for a district and crop."""
+    IRRIGATION_DEFICIT_MM.labels(district_id=district_id, crop=crop).set(max(0.0, nir_mm))
+    _push_safe()
+
+
+def record_saltwater_intrusion(city_id: str, sii: float) -> None:
+    """Set Saltwater Intrusion Index gauge for a coastal city."""
+    SALTWATER_INTRUSION_INDEX.labels(city_id=city_id).set(sii)
+    _push_safe()
