@@ -178,6 +178,39 @@ if _PROM_AVAILABLE:
         registry=_REGISTRY,
     )
 
+    # ---- Sprint 7 metrics ----
+
+    # G1: Water balance residual fraction per watershed
+    WATER_BALANCE_RESIDUAL = Gauge(
+        "tropi_water_balance_residual_fraction",
+        "Water balance residual fraction |res/P| per watershed (0=closed, >0.15=unclosed)",
+        labelnames=["watershed_id"],
+        registry=_REGISTRY,
+    )
+
+    # G3: Flood inundation area per river and flood stage
+    INUNDATION_AREA_KM2 = Gauge(
+        "tropi_flood_inundation_area_km2",
+        "Flood inundation affected area (km²) per river and flood stage",
+        labelnames=["river_id", "flood_stage"],
+        registry=_REGISTRY,
+    )
+
+    # G5: GRACE-FO groundwater storage anomaly per region
+    GRACE_GWS_ANOMALY = Gauge(
+        "tropi_grace_gws_anomaly_mm",
+        "GRACE-FO groundwater storage anomaly (mm/month, negative = depletion) per region",
+        labelnames=["region_id"],
+        registry=_REGISTRY,
+    )
+
+    # G5: Aquifer emergency region counter
+    AQUIFER_EMERGENCY = Counter(
+        "tropi_aquifer_emergency_total",
+        "Total count of aquifer regions reaching EMERGENCY depletion class",
+        registry=_REGISTRY,
+    )
+
 else:  # pragma: no cover — define stub objects so call sites don't need guards
     class _Stub:  # type: ignore[no-redef]
         def labels(self, **_): return self
@@ -201,6 +234,11 @@ else:  # pragma: no cover — define stub objects so call sites don't need guard
     DROUGHT_RISK_CLASS         = _Stub()  # type: ignore[assignment]
     DROUGHT_WATERSHEDS_WARNING = _Stub()  # type: ignore[assignment]
     FLOOD_THRESHOLD_BREACH     = _Stub()  # type: ignore[assignment]
+    # Sprint 7 stubs
+    WATER_BALANCE_RESIDUAL     = _Stub()  # type: ignore[assignment]
+    INUNDATION_AREA_KM2        = _Stub()  # type: ignore[assignment]
+    GRACE_GWS_ANOMALY          = _Stub()  # type: ignore[assignment]
+    AQUIFER_EMERGENCY          = _Stub()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -294,3 +332,57 @@ def _push_safe(force: bool = False) -> None:
         push_to_gateway(PUSHGATEWAY_URL, job=_JOB_NAME, registry=_REGISTRY)
     except Exception as exc:  # pylint: disable=broad-except
         logger.debug("Pushgateway push failed (non-fatal): %s", exc)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 7 additions — Water Balance, Inundation, GRACE-FO, Aquifer
+# ---------------------------------------------------------------------------
+
+WATER_BALANCE_RESIDUAL = _make_gauge(
+    "tropi_water_balance_residual_fraction",
+    "Water balance residual fraction (|residual/P|) per watershed",
+    ["watershed_id"],
+)
+
+INUNDATION_AREA_KM2 = _make_gauge(
+    "tropi_flood_inundation_area_km2",
+    "Flood inundation extent in km² per river and flood stage",
+    ["river_id", "flood_stage"],
+)
+
+GRACE_GWS_ANOMALY = _make_gauge(
+    "tropi_grace_gws_anomaly_mm",
+    "GRACE-FO groundwater storage anomaly in mm per region",
+    ["region_id"],
+)
+
+AQUIFER_EMERGENCY = _make_counter(
+    "tropi_aquifer_emergency_total",
+    "Total number of aquifer emergency threshold breaches",
+    ["region_id"],
+)
+
+
+def record_water_balance_residual(watershed_id: str, residual_fraction: float) -> None:
+    """Set water balance residual fraction for a watershed."""
+    WATER_BALANCE_RESIDUAL.labels(watershed_id=watershed_id).set(residual_fraction)
+    _push_safe()
+
+
+def record_inundation_area(river_id: str, flood_stage: str, area_km2: float) -> None:
+    """Set flood inundation area for a river and flood stage."""
+    INUNDATION_AREA_KM2.labels(river_id=river_id, flood_stage=flood_stage).set(area_km2)
+    _push_safe()
+
+
+def record_grace_gws_anomaly(region_id: str, anomaly_mm: float) -> None:
+    """Set GRACE-FO groundwater storage anomaly for a region."""
+    GRACE_GWS_ANOMALY.labels(region_id=region_id).set(anomaly_mm)
+    _push_safe()
+
+
+def increment_aquifer_emergency(region_id: str) -> None:
+    """Increment aquifer emergency counter for a region."""
+    AQUIFER_EMERGENCY.labels(region_id=region_id).inc()
+    logger.warning("Aquifer EMERGENCY threshold breached | region=%s", region_id)
+    _push_safe()
