@@ -159,3 +159,48 @@ MODEL_CARD_GENERATED = Counter(
 ANALYTICA_METRIC_NAMESPACE = "tropi"
 # HYDROLOGIS metrics live in src/hydrology/metrics.py under the same tropi_ prefix
 # but are instantiated in a separate _REGISTRY to avoid Prometheus duplicate registration.
+
+# ---------------------------------------------------------------------------
+# Sprint 8 — A/B Tester (N1 / ab_tester.py)
+# tropi_ab_test_traffic_split{model_id, role=champion|challenger} Gauge
+# Set on each ModelABTester.register_challenger() and promote_winner() call.
+# ---------------------------------------------------------------------------
+
+AB_TEST_TRAFFIC_SPLIT = Gauge(
+    "tropi_ab_test_traffic_split",
+    "Live traffic split percentage per model role in active A/B tests",
+    ["model_id", "role"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 8 — HPO Optimizer (N3 / hyperparameter_optimizer.py)
+# tropi_hpo_best_metric{model_id, metric_name} Gauge
+# Updated after each HPO study completion with the best trial value.
+# ---------------------------------------------------------------------------
+
+HPO_BEST_METRIC = Gauge(
+    "tropi_hpo_best_metric",
+    "Best objective metric value from the latest Optuna HPO study per model",
+    ["model_id", "metric_name"],
+)
+
+# tropi_hpo_trials_completed_total{model_id} Counter
+# Incremented by n_trials each time HPOOptimizer.optimize() completes.
+
+HPO_TRIALS_COMPLETED = Counter(
+    "tropi_hpo_trials_completed_total",
+    "Cumulative Optuna trials completed per model across all HPO runs",
+    ["model_id"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 8 — Data Drift Responder (N5 / data_drift_responder.py)
+# tropi_drift_response_triggered_total{model_id, urgency=WARNING|CRITICAL} Counter
+# Incremented each time a non-NOMINAL drift response plan is generated.
+# ---------------------------------------------------------------------------
+
+DRIFT_RESPONSE_TRIGGERED = Counter(
+    "tropi_drift_response_triggered_total",
+    "Drift remediation plans generated per model and urgency level",
+    ["model_id", "urgency"],
+)
