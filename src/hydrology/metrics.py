@@ -2,18 +2,24 @@
 Prometheus instrumentation for HYDROLOGIS pipelines.
 
 Sprint 4 validation (2026-06-04): exports confirmed correct.
-  ✅ record_ingestion_success(pipeline_id: str)  — line 103
-  ✅ _REGISTRY (prometheus_client.CollectorRegistry) — line 45
-  ✅ measure_alert_delivery(river, breach_time)   — line 118
-  ✅ increment_webhook_failure(river, endpoint)   — line 152
-  ✅ push_metrics()                               — line 166
-No changes required; this comment update confirms Sprint 4 validation pass.
+  ✅ record_ingestion_success, _REGISTRY, measure_alert_delivery,
+     increment_webhook_failure, push_metrics
+
+Sprint 5 additions (2026-06-04):
+  ✅ BMKG_GAUGE_SUCCESS_TS     → tropi_bmkg_gauge_last_success_timestamp_seconds{river_id}
+  ✅ BMKG_GAUGE_FETCH_FAILURES → tropi_bmkg_gauge_fetch_failures_total{station_id}
+  ✅ QPE_VALIDATED_TS          → tropi_qpe_last_validated_timestamp_seconds
+  ✅ QPE_VALIDATION_FAILURES   → tropi_qpe_validation_failures_total{reason}
+  ✅ ALERT_DELIVERY_TOTAL      → tropi_flood_alert_delivery_total{river_id,channel,status}
+  ✅ WATER_BALANCE_CLOSURE_ERR → tropi_water_balance_closure_error_pct{watershed_id}
 
 Exports:
-  record_ingestion_success(pipeline)       → sets tropi_pipeline_last_ingestion_success_timestamp_seconds
+  record_ingestion_success(pipeline)         → sets tropi_pipeline_last_ingestion_success_timestamp_seconds
   measure_alert_delivery(river, breach_time) → context manager, observes tropi_flood_alert_delivery_duration_seconds
-  increment_webhook_failure(river)         → increments tropi_flood_alert_webhook_failures_total
-  push_metrics()                           → pushes all metrics to Prometheus Pushgateway
+  increment_webhook_failure(river)           → increments tropi_flood_alert_webhook_failures_total
+  push_metrics()                             → pushes all metrics to Prometheus Pushgateway
+  BMKG_GAUGE_SUCCESS_TS, BMKG_GAUGE_FETCH_FAILURES, QPE_VALIDATED_TS,
+  QPE_VALIDATION_FAILURES, ALERT_DELIVERY_TOTAL, WATER_BALANCE_CLOSURE_ERR → module-level Gauge/Counter objects
 
 Pushgateway URL: PUSHGATEWAY_URL env var (default: http://pushgateway:9091)
 Job name: tropi-hydrologis
@@ -88,6 +94,55 @@ if _PROM_AVAILABLE:
         registry=_REGISTRY,
     )
 
+    # ---- Sprint 5 metrics ----
+
+    # D1: BMKG gauge freshness per river
+    BMKG_GAUGE_SUCCESS_TS = Gauge(
+        "tropi_bmkg_gauge_last_success_timestamp_seconds",
+        "Unix timestamp of the last successful BMKG HIMET gauge fetch per river",
+        labelnames=["river_id"],
+        registry=_REGISTRY,
+    )
+
+    # D1: BMKG fetch failures per station
+    BMKG_GAUGE_FETCH_FAILURES = Counter(
+        "tropi_bmkg_gauge_fetch_failures_total",
+        "Total failed BMKG HIMET gauge fetch attempts per station",
+        labelnames=["station_id"],
+        registry=_REGISTRY,
+    )
+
+    # D2: QPE validation freshness (no label — single domain)
+    QPE_VALIDATED_TS = Gauge(
+        "tropi_qpe_last_validated_timestamp_seconds",
+        "Unix timestamp of the last successful QPE file validation pass",
+        registry=_REGISTRY,
+    )
+
+    # D2: QPE validation failures per reason
+    QPE_VALIDATION_FAILURES = Counter(
+        "tropi_qpe_validation_failures_total",
+        "Total QPE validation failures by reason code",
+        labelnames=["reason"],
+        registry=_REGISTRY,
+    )
+
+    # D3: Flood alert delivery by channel and status
+    ALERT_DELIVERY_TOTAL = Counter(
+        "tropi_flood_alert_delivery_total",
+        "Total flood alert delivery attempts by river, channel, and status",
+        labelnames=["river_id", "channel", "status"],
+        registry=_REGISTRY,
+    )
+
+    # D5: Water balance closure error per watershed
+    WATER_BALANCE_CLOSURE_ERR = Gauge(
+        "tropi_water_balance_closure_error_pct",
+        "Water balance closure error (|Q_computed - Q_obs| / Q_obs * 100) per watershed",
+        labelnames=["watershed_id"],
+        registry=_REGISTRY,
+    )
+
 else:  # pragma: no cover — define stub objects so call sites don't need guards
     class _Stub:  # type: ignore[no-redef]
         def labels(self, **_): return self
@@ -95,9 +150,16 @@ else:  # pragma: no cover — define stub objects so call sites don't need guard
         def observe(self, *_): pass
         def inc(self, *_): pass
 
-    INGESTION_SUCCESS_TS = _Stub()   # type: ignore[assignment]
-    ALERT_DELIVERY_DURATION = _Stub()  # type: ignore[assignment]
-    WEBHOOK_FAILURES = _Stub()         # type: ignore[assignment]
+    INGESTION_SUCCESS_TS     = _Stub()   # type: ignore[assignment]
+    ALERT_DELIVERY_DURATION  = _Stub()   # type: ignore[assignment]
+    WEBHOOK_FAILURES         = _Stub()   # type: ignore[assignment]
+    # Sprint 5 stubs
+    BMKG_GAUGE_SUCCESS_TS    = _Stub()   # type: ignore[assignment]
+    BMKG_GAUGE_FETCH_FAILURES = _Stub()  # type: ignore[assignment]
+    QPE_VALIDATED_TS         = _Stub()   # type: ignore[assignment]
+    QPE_VALIDATION_FAILURES  = _Stub()   # type: ignore[assignment]
+    ALERT_DELIVERY_TOTAL     = _Stub()   # type: ignore[assignment]
+    WATER_BALANCE_CLOSURE_ERR = _Stub()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------

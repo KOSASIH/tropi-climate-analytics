@@ -202,6 +202,28 @@ _HYDROLOGIS Sprint 4 | Tropi Climate Analytics_
     return summary_path
 
 
+
+# ---------------------------------------------------------------------------
+# Task 5: write_water_balance_report  (Sprint 5 addition)
+# ---------------------------------------------------------------------------
+
+def write_water_balance_report(**context) -> str:
+    """
+    Invoke WaterBalanceReportGenerator for current forecast month.
+    Writes workspace/output/reports/water_balance_YYYYMM.md for VISUALIA.
+    """
+    from src.hydrology.water_balance_report import WaterBalanceReportGenerator
+
+    ti = context["ti"]
+    result = ti.xcom_pull(task_ids="generate_all_advisories")
+    forecast_month = date.fromisoformat(result["forecast_month"])
+
+    gen = WaterBalanceReportGenerator()
+    report_path = gen.run(forecast_month=forecast_month)
+    logger.info("Water balance report written: %s", report_path)
+    return report_path
+
+
 # ---------------------------------------------------------------------------
 # DAG definition
 # ---------------------------------------------------------------------------
@@ -253,5 +275,49 @@ with DAG(
         python_callable=write_summary_report,
     )
 
+    t_water_balance = PythonOperator(
+        task_id="write_water_balance_report",
+        python_callable=write_water_balance_report,
+    )
+
     # Task dependencies
-    t_prepare >> t_generate >> t_metrics >> t_report
+    t_prepare >> t_generate >> t_metrics >> t_report >> t_water_balance
+
+
+# ---------------------------------------------------------------------------
+# Task 5: write_water_balance_report  (Sprint 5 D5 integration)
+# ---------------------------------------------------------------------------
+
+def write_water_balance_report(**context) -> str:
+    """
+    Generate monthly P−ET−ΔS=Q water balance report for all 20 DAS.
+    Writes workspace/output/reports/water_balance_YYYYMM.md for VISUALIA.
+    Flags watersheds with closure error > 15%.
+    """
+    from datetime import date as date_cls
+
+    from src.hydrology.water_balance_report import WaterBalanceReportGenerator
+
+    ti = context["ti"]
+    result = ti.xcom_pull(task_ids="generate_all_advisories")
+
+    # Report month matches the advisory month
+    forecast_month = date_cls.fromisoformat(result["forecast_month"])
+
+    gen    = WaterBalanceReportGenerator()
+    status = gen.run(report_month=forecast_month)
+
+    logger.info(
+        "Water balance report written | month=%s imbalanced=%d path=%s",
+        forecast_month,
+        len(status.imbalanced_watersheds),
+        status.report_path,
+    )
+
+    if status.imbalanced_watersheds:
+        logger.warning(
+            "Water balance imbalance >15%% in: %s",
+            status.imbalanced_watersheds,
+        )
+
+    return status.report_path
