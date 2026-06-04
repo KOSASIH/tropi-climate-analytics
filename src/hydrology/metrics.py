@@ -265,6 +265,32 @@ if _PROM_AVAILABLE:
         registry=_REGISTRY,
     )
 
+    # ---- Sprint 10 metrics ----
+
+    # M1: Daily reference ET per watershed and computation method
+    ET_DAILY_MM = Gauge(
+        "tropi_et_daily_mm",
+        "Daily reference evapotranspiration (mm) per watershed and method (penman_monteith | modis)",
+        labelnames=["watershed_id", "method"],
+        registry=_REGISTRY,
+    )
+
+    # M3: Reservoir storage fraction (fraction of active capacity) per reservoir
+    RESERVOIR_STORAGE_FRACTION = Gauge(
+        "tropi_reservoir_storage_fraction",
+        "Reservoir active storage fraction (0–1) per reservoir",
+        labelnames=["reservoir_id"],
+        registry=_REGISTRY,
+    )
+
+    # M5: Flash Flood Index per high-risk region
+    FLASH_FLOOD_INDEX = Gauge(
+        "tropi_flash_flood_index",
+        "Flash Flood Index (FFI = QPE_3hr / FFG_3hr) per BNPB high-risk region",
+        labelnames=["region_id"],
+        registry=_REGISTRY,
+    )
+
 else:  # pragma: no cover — define stub objects so call sites don't need guards
     class _Stub:  # type: ignore[no-redef]
         def labels(self, **_): return self
@@ -301,6 +327,10 @@ else:  # pragma: no cover — define stub objects so call sites don't need guard
     FLOOD_ALERT_DISPATCH       = _Stub()  # type: ignore[assignment]
     SEASONAL_FORECAST_SKILL    = _Stub()  # type: ignore[assignment]
     WATERSHED_MODEL_RUNTIME    = _Stub()  # type: ignore[assignment]
+    # Sprint 10 stubs
+    ET_DAILY_MM                = _Stub()  # type: ignore[assignment]
+    RESERVOIR_STORAGE_FRACTION = _Stub()  # type: ignore[assignment]
+    FLASH_FLOOD_INDEX          = _Stub()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -547,4 +577,45 @@ def record_watershed_model_runtime(watershed_id: str, model: str,
     WATERSHED_MODEL_RUNTIME.labels(
         watershed_id=watershed_id, model=model, status=status
     ).observe(runtime_s)
+    _push_safe()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 10 additions — Evapotranspiration, Reservoir Operations, Flash Flood
+# ---------------------------------------------------------------------------
+
+ET_DAILY_MM = _make_gauge(
+    "tropi_et_daily_mm",
+    "Daily reference evapotranspiration (ET₀) in mm per watershed and method",
+    ["watershed_id", "method"],
+)
+
+RESERVOIR_STORAGE_FRACTION = _make_gauge(
+    "tropi_reservoir_storage_fraction",
+    "Current reservoir storage as fraction of active capacity (0–1) per reservoir",
+    ["reservoir_id"],
+)
+
+FLASH_FLOOD_INDEX = _make_gauge(
+    "tropi_flash_flood_index",
+    "Flash Flood Index (FFI = QPE_3hr / FFG_3hr) per high-risk region",
+    ["region_id"],
+)
+
+
+def record_et_daily(watershed_id: str, method: str, et0_mm: float) -> None:
+    """Set daily ET₀ gauge for a watershed and estimation method."""
+    ET_DAILY_MM.labels(watershed_id=watershed_id, method=method).set(et0_mm)
+    _push_safe()
+
+
+def record_reservoir_storage(reservoir_id: str, storage_fraction: float) -> None:
+    """Set reservoir storage fraction gauge."""
+    RESERVOIR_STORAGE_FRACTION.labels(reservoir_id=reservoir_id).set(storage_fraction)
+    _push_safe()
+
+
+def record_flash_flood_index(region_id: str, ffi: float) -> None:
+    """Set Flash Flood Index gauge for a high-risk region."""
+    FLASH_FLOOD_INDEX.labels(region_id=region_id).set(ffi)
     _push_safe()
