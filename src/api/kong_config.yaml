@@ -1,0 +1,184 @@
+_format_version: "3.0"
+_transform: true
+
+# ---------------------------------------------------------------------------
+# Services — upstream FastAPI application
+# ---------------------------------------------------------------------------
+services:
+  - name: tropi-climate-api
+    url: http://localhost:8000
+    connect_timeout: 10000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 2
+
+    routes:
+      - name: v1-climate-current
+        paths: ["/v1/climate"]
+        methods: [GET]
+        strip_path: false
+
+      - name: v1-forecast
+        paths: ["/v1/forecast"]
+        methods: [GET]
+        strip_path: false
+
+      - name: v1-flood-alerts
+        paths: ["/v1/flood"]
+        methods: [GET]
+        strip_path: false
+
+      - name: v1-streamflow
+        paths: ["/v1/streamflow"]
+        methods: [GET]
+        strip_path: false
+
+      - name: v1-satellite
+        paths: ["/v1/satellite"]
+        methods: [GET]
+        strip_path: false
+
+      - name: v1-auth
+        paths: ["/v1/auth"]
+        methods: [POST]
+        strip_path: false
+
+      - name: health
+        paths: ["/health"]
+        methods: [GET]
+        strip_path: false
+        plugins:
+          - name: rate-limiting
+            config:
+              minute: 120
+              policy: local
+
+# ---------------------------------------------------------------------------
+# Global plugins
+# ---------------------------------------------------------------------------
+plugins:
+
+  # ── JWT authentication ────────────────────────────────────────────────────
+  - name: jwt
+    config:
+      key_claim_name: role
+      claims_to_verify: [exp]
+      header_names: [authorization]
+      uri_param_names: [jwt]
+      # /health and public GET endpoints bypass JWT — handled per-route below
+    enabled: true
+
+  # ── Request transformer — inject API version header ───────────────────────
+  - name: request-transformer
+    config:
+      add:
+        headers:
+          - "X-API-Version: 1.0"
+          - "X-Platform: tropi-climate-analytics"
+      remove:
+        headers:
+          - "X-Forwarded-For"   # re-added by Kong with correct value
+
+  # ── Response transformer — add CORS + security headers ───────────────────
+  - name: response-transformer
+    config:
+      add:
+        headers:
+          - "Strict-Transport-Security: max-age=31536000; includeSubDomains"
+          - "X-Content-Type-Options: nosniff"
+          - "X-Frame-Options: DENY"
+
+  # ── Correlation ID ────────────────────────────────────────────────────────
+  - name: correlation-id
+    config:
+      header_name: X-Request-ID
+      generator: uuid#counter
+      echo_downstream: true
+
+  # ── Prometheus metrics ────────────────────────────────────────────────────
+  - name: prometheus
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+
+# ---------------------------------------------------------------------------
+# Consumers — one per role tier
+# Rate limits: public 100/hr, researcher 1000/hr, government 10000/hr
+# ---------------------------------------------------------------------------
+consumers:
+
+  - username: public-tier
+    custom_id: role-public
+    plugins:
+      - name: rate-limiting
+        config:
+          hour: 100
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          redis_database: 1
+          fault_tolerant: true
+          hide_client_headers: false
+
+  - username: researcher-tier
+    custom_id: role-researcher
+    plugins:
+      - name: rate-limiting
+        config:
+          hour: 1000
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          redis_database: 1
+          fault_tolerant: true
+
+  - username: government-tier
+    custom_id: role-government
+    plugins:
+      - name: rate-limiting
+        config:
+          hour: 10000
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          redis_database: 1
+          fault_tolerant: true
+
+  - username: admin-tier
+    custom_id: role-admin
+    # No rate-limiting plugin — unlimited
+
+  - username: internal-tier
+    custom_id: role-internal
+    plugins:
+      - name: rate-limiting
+        config:
+          minute: 5000
+          policy: redis
+          redis_host: redis
+          redis_port: 6379
+          redis_database: 1
+          fault_tolerant: true
+
+# ---------------------------------------------------------------------------
+# JWT secrets — one credential per consumer tier
+# (replace key/secret with values from secrets manager in production)
+# ---------------------------------------------------------------------------
+# kong_credentials:
+#   jwt:
+#     - consumer: public-tier
+#       key: public-key
+#       secret: "${JWT_SECRET_PUBLIC}"
+#     - consumer: researcher-tier
+#       key: researcher-key
+#       secret: "${JWT_SECRET_RESEARCHER}"
+#     - consumer: government-tier
+#       key: government-key
+#       secret: "${JWT_SECRET_GOVERNMENT}"
+#     - consumer: admin-tier
+#       key: admin-key
+#       secret: "${JWT_SECRET_ADMIN}"
+#     - consumer: internal-tier
+#       key: internal-key
+#       secret: "${JWT_SECRET_INTERNAL}"
