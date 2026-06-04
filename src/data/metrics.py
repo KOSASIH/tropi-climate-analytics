@@ -4,6 +4,10 @@ Prometheus metric exports for all ANALYTICA subsystems.
 
 Namespace: tropi_*  (ANALYTICA-owned; separate from HYDROLOGIS metrics in src/hydrology/metrics.py)
 
+Sprint 6 additions:
+  RETRAINING_DURATION    tropi_retraining_duration_seconds{model_id, status}   Histogram
+  DATA_QUALITY_FAILURES  tropi_data_quality_failures_total{entity_type, expectation_type} Counter
+
 Sprint 5 additions:
   INFERENCE_LATENCY  tropi_inference_latency_seconds{model_id, endpoint}  Histogram
   INFERENCE_REQUESTS tropi_inference_requests_total{model_id, status}      Counter
@@ -63,6 +67,31 @@ RETRAIN_TRIGGER_COUNTER = Counter(
     "tropi_retrain_trigger_total",
     "Total retraining triggers fired by model",
     ["model_id"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 6 — Automated Retraining DAGs (I1–I4)
+# tropi_retraining_duration_seconds{model_id, status=success|failed}
+# Histogram with buckets spanning 1 minute to 2 hours (matching longest SLA)
+# ---------------------------------------------------------------------------
+
+RETRAINING_DURATION = Histogram(
+    "tropi_retraining_duration_seconds",
+    "End-to-end model retraining pipeline duration (load → train → evaluate → register)",
+    ["model_id", "status"],
+    buckets=(60, 300, 600, 1800, 3600, 7200),  # 1min, 5min, 10min, 30min, 1hr, 2hr
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 6 — Feature Store Data Quality (I5 / data_quality.py)
+# tropi_data_quality_failures_total{entity_type, expectation_type}
+# Incremented per column/expectation that fails during run_suite()
+# ---------------------------------------------------------------------------
+
+DATA_QUALITY_FAILURES = Counter(
+    "tropi_data_quality_failures_total",
+    "Feature store data quality expectation failures before model training",
+    ["entity_type", "expectation_type"],
 )
 
 # ---------------------------------------------------------------------------
