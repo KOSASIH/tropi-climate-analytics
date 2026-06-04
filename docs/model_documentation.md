@@ -1,165 +1,215 @@
 # ANALYTICA Model Documentation
-**Tropi-Climate-Analytics | Sprint 0+1 | Version 0.1.0**
-*Regulatory compliance documentation per PP Number 71/2019 (Indonesia)*
+## Tropi-Climate-Analytics | Sprint 0
+
+> **Agent**: ANALYTICA | **Sprint**: 0 | **Date**: 2026-06-04 | **Status**: Initial Release
 
 ---
 
-## 1. Overview
+## Overview
 
-The ANALYTICA subsystem provides ML/AI predictive capabilities for the Tropi-Climate-Analytics platform. It comprises four production model families:
-
-| Model | Algorithm | Horizon | Update Frequency |
-|-------|-----------|---------|-----------------|
-| Precipitation Nowcasting | XGBoost ensemble | 24/48/72h | Weekly retrain (Mon 01:00 WIB) |
-| Seasonal Climate Forecasting | Prophet + ENSO regressors | 1–12 months | Monthly retrain (1st 02:00 WIB) |
-| Satellite Classification | CNN (ResNet-lite) | Inference on demand | Quarterly retrain |
-| Streamflow Forecasting | LSTM + Bahdanau attention | 6/12/24/48h | Monthly retrain |
+This document describes the ML/AI models developed by ANALYTICA for the Tropi-Climate-Analytics platform, covering architecture, data sources, performance targets, MLOps workflows, explainability, and regulatory compliance.
 
 ---
 
-## 2. Precipitation Nowcasting (XGBoost)
+## 1. Model Inventory
 
-### 2.1 Purpose
-24–72 hour precipitation accumulation forecasts at 4km resolution for flood early warning and BPBD alert integration.
-
-### 2.2 Input Features
-- **GPM IMERG** half-hourly estimates (bias-corrected via BMKG gauge fusion)
-- **BMKG synoptic** observations: SLP, RH, wind speed/direction
-- **SMAP** surface and root-zone soil moisture (6–48h lags)
-- **DEM-derived** catchment morphology (slope, flow accumulation, aspect)
-- **Temporal**: cyclical hour/DOY/month encodings, wet/dry season indicator
-
-Feature count: ~420 per sample | Temporal lags: 1, 3, 6, 12, 24, 48, 72h | Rolling windows: 3, 6, 12, 24, 48h
-
-### 2.3 Training Data
-- Source: QPE fusion archive + BMKG historical gauges (Jan 2019 – present)
-- Training window: 365 days rolling lookback
-- Validation holdout: last 90 days (walk-forward)
-- Spatial coverage: Indonesia (6°N–11°S, 95°E–141°E)
-
-### 2.4 Performance Targets
-
-| Metric | Threshold | Evaluation Period |
-|--------|-----------|------------------|
-| RMSE 24h | ≤ 8.0 mm | 90-day holdout |
-| MAE 24h  | ≤ 5.0 mm | 90-day holdout |
-| RMSE 48h | ≤ 12.0 mm | 90-day holdout |
-| RMSE 72h | ≤ 15.0 mm | 90-day holdout |
-
-### 2.5 MLflow Registry
-- **Experiment**: `precipitation_nowcasting`
-- **Registered model**: `precipitation-nowcasting-xgboost`
-- **Stages**: Development → Staging → Production
-- **Artifact storage**: `s3://tropi-climate-mlflow-artifacts/mlflow/precipitation_nowcasting/`
+| Model | Type | Horizon | Resolution | Target Metric |
+|---|---|---|---|---|
+| PrecipitationNowcastModel | XGBoost Regressor | 24–72 h | 0.25° | RMSE < 15 mm |
+| SeasonalForecastModel | Prophet | 3–6 months | Province | MAPE < 20% |
+| LandCoverCNN | ResNet + Attention CNN | N/A (classification) | 30 m | Accuracy ≥ 85% |
 
 ---
 
-## 3. Seasonal Climate Forecasting (Prophet)
+## 2. PrecipitationNowcastModel (XGBoost)
 
-### 3.1 Purpose
-1–12 month seasonal forecasts for temperature, monthly rainfall, SPI drought index, and agricultural water availability planning.
+### Architecture
+- **Algorithm**: XGBoost histogram gradient boosting (`tree_method=hist`)
+- **Ensemble size**: 1,000 trees, max depth 8
+- **Objective**: `reg:squarederror` with RMSE + MAE eval metrics
+- **Regularisation**: L1 (α=0.1), L2 (λ=1.0), subsample 80%, colsample 80%
+- **Early stopping**: 50 rounds on validation RMSE
 
-### 3.2 Model Configuration
-- Yearly seasonality: enabled (Fourier order 10)
-- Custom wet/dry seasonality: period 182.5 days (Fourier order 5)
-- ENSO regressors: ONI index, IOD index, MJO phase (sin/cos)
-- Changepoint prior scale: 0.05 (conservative for tropical signal)
-- Seasonality mode: multiplicative
+### Feature Groups (8 groups, ~350 features)
+| Group | Source | Features |
+|---|---|---|
+| MODIS cloud & land | MODIS MOD09/MOD11/MOD13 | cloud_optical_depth, ndvi, evi, LST, … |
+| GPM precipitation | GPM IMERG | precip_rate_1/3/6h, latent_heat_flux, … |
+| BMKG surface obs | BMKG AWS network | station_rainfall, T2m, RH, wind, MSLP, … |
+| Atmospheric instability | NWP analysis | CAPE, CIN, LI, wind shear, PW, K-index, … |
+| Topography | SRTM 30m | elevation, slope, aspect, TWI, dist_coast, … |
+| Temporal (cyclic) | Derived | sin/cos hour, DOY, month, wet_season flag |
+| Climate indices | NOAA/BOM | ONI, IOD, ENSO phase, MJO phase/amplitude |
+| Precipitation lags | Self | lag 6/12/18/24/48/72 h + 6 rolling stats |
 
-### 3.3 Variables Modelled
+### Training Data
+- **Period**: 2015–2024 (10 years)
+- **Domain**: Indonesian archipelago (95°E–141°E, 11°S–6°N)
+- **Positive/negative split**: Wet season 60%, dry season 40%
+- **Train/val split**: Temporal — 2015–2022 train, 2023–2024 validation
 
-| Variable | Unit | Coverage |
-|----------|------|----------|
-| Monthly rainfall | mm | 500+ BMKG stations |
-| Mean temperature | °C | 500+ BMKG stations |
-| SPI-3 drought index | z-score | Gridded 10km |
-| Agricultural water availability | mm/month | Provincial level |
-
-### 3.4 Performance Target
-- MAPE monthly rainfall: ≤ 15% on 90-day holdout
-
----
-
-## 4. Satellite Classification (CNN)
-
-### 4.1 Architecture
-- 3 convolutional blocks (32 → 64 → 128 filters), 3×3 kernels, BatchNorm + ReLU
-- AdaptiveAvgPool → FC(256) → Dropout(0.4) → output head
-- Input: 64×64 pixel patches, 7 spectral bands (Landsat-8 OLI: B2–B7 + NDVI)
-
-### 4.2 Tasks
-
-| Task | Classes | Accuracy Target | Data Source |
-|------|---------|----------------|-------------|
-| Land cover classification | 10 (water, urban, crops, forest types, mangrove, bare soil...) | ≥ 85% | Landsat-8, 30m |
-| Cloud masking | 2 (clear / cloud) | ≥ 92% | Landsat-8 + MODIS |
-| Damage assessment | 3 (none / partial / severe) | ≥ 80% F1-macro | Sentinel-2 post-event |
-
-### 4.3 Training Protocol
-- Augmentation: horizontal/vertical flip, ±15° rotation, brightness ±20%
-- Optimiser: AdamW (lr=1e-3, weight_decay=1e-4)
-- LR schedule: CosineAnnealingLR (T_max=50 epochs)
-- Class imbalance: weighted cross-entropy
+### Performance (Sprint 0 target)
+| Metric | Target | Evaluated on |
+|---|---|---|
+| RMSE | < 15 mm | 6-hour accumulation, 2023–2024 holdout |
+| MAE | < 10 mm | same |
+| Bias | ±2 mm | same |
 
 ---
 
-## 5. Streamflow Forecasting (LSTM)
+## 3. SeasonalForecastModel (Prophet)
 
-### 5.1 Architecture
-- 3-layer stacked LSTM (hidden=256) + Bahdanau attention
-- Lookback window: 30 days × 18 features
-- Output heads: 6h, 12h, 24h, 48h streamflow (m³/s)
+### Architecture
+- **Algorithm**: Facebook Prophet with multiplicative seasonality
+- **Seasonalities**: Yearly (built-in) + Indonesian semi-annual wet season (period=182.6 d, Fourier order 5) + ENSO-conditional annual cycle
+- **Changepoints**: `changepoint_prior_scale=0.05` (conservative)
+- **Regressors**: ONI, IOD, ENSO phase, MJO phase, MJO amplitude (all standardised)
+- **Prediction intervals**: 95% credible interval
 
-### 5.2 Station Coverage
+### Cross-Validation
+- Initial training window: 730 days (2 years)
+- Period between cutoffs: 180 days
+- Forecast horizon: 90 days
+- Metric: RMSE, MAE, MAPE averaged across all cutoffs
 
-| Station | River | Catchment Area | NSE Target |
-|---------|-------|---------------|-----------|
-| Manggarai | Ciliwung | 387 km² | ≥ 0.80 |
-| Mlirip | Brantas | 11,800 km² | ≥ 0.80 |
-| Jurug | Solo | 15,800 km² | ≥ 0.80 |
-
-### 5.3 Features
-GPM QPE (1/3/6/12/24h rolling), SMAP soil moisture, BMKG gauge (1/3/6/12/24h lags), DEM morphology (slope, FAC, TWI), calendar (hour/DOY cyclical, wet season flag)
-
----
-
-## 6. MLOps Infrastructure
-
-### 6.1 Retraining Schedule
-
-| Model | Cron (UTC) | WIB Time | Trigger |
-|-------|-----------|----------|---------|
-| XGBoost precipitation | `0 18 * * 0` | Mon 01:00 | Weekly |
-| Prophet seasonal | `0 19 1 * *` | 1st 02:00 | Monthly |
-| CNN land cover | `0 20 1 1,4,7,10 *` | Quarterly 03:00 | Quarterly |
-| LSTM streamflow | `0 19 1 * *` | 1st 02:00 | Monthly |
-
-### 6.2 Quality Gate
-Models must pass all performance thresholds before registration. Failed runs are logged to MLflow but not registered. Alert sent to `mlops-alerts@tropi-climate-analytics.id`.
-
-### 6.3 A/B Testing
-- Challenger receives 10% of inference traffic (deterministic SHA-256 hash routing)
-- Promotion requires: ≥ 1,000 samples, Welch's t-test p < 0.05, challenger better on primary metric
-- All routing decisions logged to MLflow for audit trail
-
-### 6.4 Explainability (SHAP)
-- TreeExplainer for XGBoost; KernelExplainer for others
-- Top-5 SHAP drivers attached to each flood early-warning Kafka message
-- Monthly compliance reports generated per PP Number 71/2019
-- Reports stored at `s3://tropi-climate-mlflow-artifacts/compliance/`
+### Performance (Sprint 0 target)
+| Metric | Target |
+|---|---|
+| CV RMSE | < 25 mm/month |
+| CV MAPE | < 20% |
 
 ---
 
-## 7. Regulatory Compliance
+## 4. LandCoverCNN
 
-| Requirement | Implementation |
-|-------------|---------------|
-| PP 71/2019 data governance | All training data sourced from BMKG/NASA with signed data agreements |
-| Model auditability | Full MLflow run history; SHAP explanations per prediction |
-| Data residency | All artifacts in AWS ap-southeast-3 (Jakarta) |
-| Access control | RBAC via AWS IAM; model registry access logged |
-| Retention | Training data 7 years; model artifacts 5 years |
+### Architecture
+```
+Input: (64, 64, 7) — Landsat 8/9 OLI bands B1–B7 (scaled 0–1)
+  → Data augmentation (RandomFlip, RandomRotation)
+  → Conv2D(32) + BN
+  → ResBlock(64) → MaxPool → Dropout(0.2)
+  → ResBlock(128) → MaxPool → Dropout(0.2)
+  → ResBlock(256) → MaxPool → Dropout(0.2)
+  → Channel Attention (ratio=8)
+  → ResBlock(512)
+  → GlobalAveragePooling2D
+  → Dense(256, ReLU) + Dropout(0.3)
+  → Dense(9, Softmax)
+Output: 9-class land cover probability vector
+```
+
+### Land Cover Classes
+1. Forest  2. Degraded forest  3. Plantation  4. Cropland
+5. Water  6. Urban  7. Bare land  8. Mangrove  9. Peatland
+
+### Training Configuration
+| Parameter | Value |
+|---|---|
+| Batch size | 64 |
+| Max epochs | 100 (early stopping patience=15) |
+| Optimiser | Adam (lr=1e-3, ReduceLROnPlateau patience=5) |
+| Loss | Sparse categorical cross-entropy |
+| L2 regularisation | 1e-4 |
+
+### Performance (Sprint 0 target)
+| Metric | Target |
+|---|---|
+| Overall accuracy | ≥ 85% |
+| Per-class F1 (forest) | ≥ 0.90 |
+| Per-class F1 (peatland) | ≥ 0.80 |
 
 ---
 
-*Last updated: 2026-06-04 | ANALYTICA v0.1.0 | Tropi-Climate-Analytics*
+## 5. Feature Engineering Pipeline
+
+The `FeatureEngineeringPipeline` class assembles **~1000+ features** per grid cell per timestep from 8 raw source groups:
+
+- **Temporal cyclic encoding**: sin/cos for hour, DOY, month; wet-season binary flag
+- **Precipitation lag features**: 9 lags (1h–168h)
+- **Rolling statistics**: 6 windows × 3 stats (mean, max, std) = 18 features
+- **Raw sensors**: 79 features from MODIS, GPM, BMKG, SMAP, atmospheric indices, topography, climate indices
+- **Landsat spectral indices**: NDVI, EVI, NDWI, MNDWI, NBR, NDBI (from 7 OLI bands)
+- **Interaction cross-terms**: CAPE×PW, NDVI×SM, shear×CAPE, ONI×IOD
+
+Missing values are forward-filled then median-imputed. Optional z-score normalisation applied after `fit()`.
+
+---
+
+## 6. MLOps Workflow
+
+### Tracking (MLflow)
+- **Tracking URI**: `MLFLOW_TRACKING_URI` (default `http://localhost:5000`)
+- **Experiment**: `tropi-climate-models`
+- **Logged per run**: hyperparameters, train/val metrics, top-20 feature importances, model artefact, run tags
+
+### Model Registry
+| Registry Name | Model |
+|---|---|
+| `tropi-precipitation-nowcast` | PrecipitationNowcastModel |
+| `tropi-seasonal-forecast` | SeasonalForecastModel |
+| `tropi-land-cover-cnn` | LandCoverCNN |
+
+Stages: `None` → `Staging` → `Production` → `Archived`
+
+### Automated Retraining Schedule
+| Model | Schedule | Timezone |
+|---|---|---|
+| XGBoost nowcast | Weekly — Monday 01:00 | Asia/Jakarta (WIB) |
+| Prophet seasonal | Monthly — 1st of month 02:00 | Asia/Jakarta (WIB) |
+| CNN land cover | Quarterly — 1st of month 03:00 every 3 months | Asia/Jakarta (WIB) |
+
+### Retraining Trigger Logic
+Retraining is triggered when **any** of the following is true:
+1. **PSI > 0.2** on any feature between reference (training) and current distribution
+2. **KS p-value < 0.05** on any feature
+3. **Production RMSE increase > 10%** versus champion baseline
+
+### Champion / Challenger A/B Protocol
+1. New model trained → registered as `Staging` challenger
+2. A/B evaluation: 5 rounds on held-out production data
+3. If challenger win rate ≥ 60% → promoted to `Production`, champion archived
+4. Otherwise → challenger archived, champion retained
+
+---
+
+## 7. Explainability
+
+All models produce SHAP-based attributions via `ModelExplainer`:
+
+| Model | SHAP Method | Output |
+|---|---|---|
+| XGBoost | TreeExplainer | Feature-level SHAP values, interaction effects |
+| CNN | GradientExplainer | Per-band attribution maps (64×64 spatial) |
+| Prophet | Component decomposition | Trend, seasonality, regressor contributions |
+
+Top-10 feature attributions are logged to every MLflow run.
+Full SHAP values available on-demand through the Analytics API (`/api/v1/models/{id}/explain`).
+
+---
+
+## 8. Regulatory Compliance
+
+| Standard | Applicability |
+|---|---|
+| BMKG Technical Standard 2023 | Precipitation nowcasting outputs distributed to BMKG |
+| KLHK PP-71/2019 | Land cover maps used by Ministry of Environment |
+| NASA EOSDIS Data Use Policy | All NASA satellite data ingested under open-access terms |
+| Google Model Card 2.0 | Model cards generated for each registered model version |
+
+**Data lineage**: Tracked from raw satellite granule to prediction via MLflow run tags and input data SHA-256 hashes.
+**Audit trail**: All training runs, data versions, and promotion decisions logged with immutable MLflow records.
+**Retention**: Model artefacts retained 7 years per KLHK archiving policy.
+
+---
+
+## 9. Contacts & Governance
+
+| Role | Contact |
+|---|---|
+| ML Engineering | ANALYTICA Agent |
+| Data Engineering | DATA-FLOW Agent |
+| Geospatial validation | GEOSPATIAL Agent |
+| Atmospheric validation | ATMOSPHERE Agent |
+| Executive oversight | CLIMATE-OS |
+
+*Model promotion to Production requires CLIMATE-OS acknowledgement.*
