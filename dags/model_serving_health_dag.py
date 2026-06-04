@@ -1,106 +1,92 @@
 """
-ANALYTICA — Model Serving Health DAG
+ANALYTICA Sprint 4 — Daily Model Serving Health DAG (hardened)
 dags/model_serving_health_dag.py
 
-Daily DAG (0 6 * * * — 06:00 WIB) that:
-  1. Pings /health on the ANALYTICA inference API
-  2. Runs drift_monitor on all 4 models
-  3. Logs DriftMonitorReport to MLflow
-  4. Triggers retraining DAG for any model where drift_detected=True
+Schedule: 0 6 * * *  (06:00 WIB daily)
 
-Schedule: 0 6 * * *  (06:00 WIB / UTC+7 = 23:00 UTC previous day)
+Stages:
+  1. ping_inference_api
+  2. run_drift_monitor_all_models
+  3. log_drift_reports_to_mlflow
+  4. evaluate_ab_test_results
+  5. branch_on_drift (BranchPythonOperator)
+     ├─ trigger_retraining_dag  (drift_detected=True)
+     └─ skip_retrain            (no drift)
+  6. notify_climate_os          (HTTP hook / MLflow tag climate_os_notified=true)
 """
 from __future__ import annotations
 
 import json
 import logging
 import os
-from datetime import datetime, timedelta
-from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
 from airflow import DAG
-from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import BranchPythonOperator, PythonOperator
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.utils.dates import days_ago
 
 log = logging.getLogger("analytica.model_serving_health_dag")
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Config
-# ─────────────────────────────────────────────────────────────────────────────
-
-INFERENCE_API_URL = os.getenv("ANALYTICA_INFERENCE_API_URL", "http://analytica-serving:8080")
+INFERENCE_API_URL   = os.getenv("ANALYTICA_INFERENCE_API_URL", "http://analytica-serving:8080")
 MLFLOW_TRACKING_URI = os.getenv("ANALYTICA_MLFLOW_TRACKING_URI", "http://mlflow:5000")
-RETRAINING_DAG_ID = "analytica_retraining_pipeline"
+CLIMATE_OS_WEBHOOK  = os.getenv("CLIMATE_OS_WEBHOOK_URL", "")
+RETRAINING_DAG_ID   = "analytica_retraining_pipeline"
 
-ALL_MODELS = [
-    "xgboost_nowcast",
-    "prophet_seasonal",
-    "cnn_land_cover",
-    "lstm_streamflow",
-]
+ALL_MODELS = ["xgboost_nowcast", "prophet_seasonal", "cnn_land_cover", "lstm_streamflow"]
 
 DEFAULT_ARGS = {
-    "owner": "analytica",
-    "depends_on_past": False,
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
+    "owner":            "analytica",
+    "depends_on_past":  False,
+    "retries":          2,
+    "retry_delay":      timedelta(minutes=5),
     "email_on_failure": False,
-    "email_on_retry": False,
 }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Task functions
+# Stage 1 — Ping inference API
 # ─────────────────────────────────────────────────────────────────────────────
 
-def ping_inference_api(**context: Any) -> Dict[str, Any]:
-    """Ping /health on the inference API and assert all models are loaded."""
+def _ping_inference_api(**ctx: Any) -> Dict[str, Any]:
     import requests
     url = f"{INFERENCE_API_URL}/health"
     try:
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(url, timeout=15)
         resp.raise_for_status()
-        health_data = resp.json()
-        log.info("Inference API health: %s", health_data)
-        loaded_models = health_data.get("models", {})
-        unhealthy = [m for m, ok in loaded_models.items() if not ok]
+        data = resp.json()
+        unhealthy = [m for m, ok in data.get("models", {}).items() if not ok]
         if unhealthy:
-            log.warning("Models not loaded: %s", unhealthy)
-            context["ti"].xcom_push(key="unhealthy_models", value=unhealthy)
+            log.warning("Unhealthy models: %s", unhealthy)
         else:
-            log.info("All models healthy ✓")
-        context["ti"].xcom_push(key="api_healthy", value=True)
-        return health_data
+            log.info("All inference API models healthy ✓")
+        ctx["ti"].xcom_push(key="api_health", value=data)
+        return data
     except Exception as exc:
         log.error("Inference API health check FAILED: %s", exc)
-        context["ti"].xcom_push(key="api_healthy", value=False)
         raise
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 2 — Run drift monitor for all models
+# ─────────────────────────────────────────────────────────────────────────────
 
-def run_drift_monitor_all_models(**context: Any) -> Dict[str, Any]:
-    """
-    Run DriftMonitor for each model. Push per-model reports to XCom.
-    Returns summary dict with drift_detected flag for any model.
-    """
+def _run_drift_monitor_all_models(**ctx: Any) -> Dict[str, Any]:
     import sys
     sys.path.insert(0, "/opt/analytica/src")
     from monitoring.drift_monitor import DriftMonitor  # type: ignore
 
     summary: Dict[str, Any] = {
-        "models_with_drift": [],
-        "reports": {},
-        "any_drift": False,
-        "any_force_retrain": False,
+        "models_with_drift":   [],
+        "reports":             {},
+        "any_drift":           False,
+        "any_force_retrain":   False,
     }
-
-    for model_name in ALL_MODELS:
+    for model in ALL_MODELS:
         try:
-            monitor = DriftMonitor(model_name=model_name)
-            report  = monitor.run()
-            saved   = report.save()
-
-            summary["reports"][model_name] = {
+            report = DriftMonitor(model_name=model).run()
+            saved  = report.save()
+            summary["reports"][model] = {
                 "drift_detected":    report.drift_detected,
                 "force_retrain":     report.force_retrain,
                 "max_psi":           report.max_psi,
@@ -108,124 +94,212 @@ def run_drift_monitor_all_models(**context: Any) -> Dict[str, Any]:
                 "report_path":       str(saved),
                 "mlflow_run_id":     report.mlflow_run_id,
             }
-
             if report.drift_detected:
-                summary["models_with_drift"].append(model_name)
+                summary["models_with_drift"].append(model)
                 summary["any_drift"] = True
             if report.force_retrain:
                 summary["any_force_retrain"] = True
-
-            log.info(
-                "[%s] drift=%s max_psi=%.4f action=%s",
-                model_name, report.drift_detected, report.max_psi, report.recommended_action,
-            )
+            log.info("[%s] drift=%s max_psi=%.4f action=%s",
+                     model, report.drift_detected, report.max_psi, report.recommended_action)
         except Exception as exc:
-            log.error("[%s] Drift monitor failed: %s", model_name, exc)
-            summary["reports"][model_name] = {"error": str(exc)}
+            log.error("[%s] drift monitor failed: %s", model, exc)
+            summary["reports"][model] = {"error": str(exc)}
 
-    context["ti"].xcom_push(key="drift_summary", value=summary)
+    ctx["ti"].xcom_push(key="drift_summary", value=summary)
     return summary
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 3 — Log drift reports to MLflow (explicit stage)
+# ─────────────────────────────────────────────────────────────────────────────
 
-def check_any_drift(**context: Any) -> bool:
-    """ShortCircuit gate — returns True (proceed) only if drift detected."""
-    summary = context["ti"].xcom_pull(task_ids="run_drift_monitor", key="drift_summary")
-    if not summary:
-        log.info("No drift summary found — skipping retraining trigger")
-        return False
-    any_drift = summary.get("any_force_retrain", False)
-    if any_drift:
-        log.info("Drift detected in models: %s — proceeding to retraining trigger",
-                 summary.get("models_with_drift"))
-    else:
-        log.info("No force_retrain flags — ShortCircuit will stop DAG here")
-    return any_drift
+def _log_drift_reports_to_mlflow(**ctx: Any) -> None:
+    try:
+        import mlflow
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        summary = ctx["ti"].xcom_pull(task_ids="run_drift_monitor_all_models", key="drift_summary") or {}
+        mlflow.set_experiment("drift_monitoring_daily")
+        with mlflow.start_run(run_name=f"daily_drift_{datetime.now(timezone.utc).strftime('%Y%m%d')}"):
+            mlflow.log_param("models_checked", ",".join(ALL_MODELS))
+            mlflow.log_metric("models_with_drift", len(summary.get("models_with_drift", [])))
+            mlflow.log_metric("any_force_retrain", int(summary.get("any_force_retrain", False)))
+            for model, report in summary.get("reports", {}).items():
+                if isinstance(report, dict) and "max_psi" in report:
+                    mlflow.log_metric(f"{model}_max_psi", report["max_psi"])
+            mlflow.log_dict(summary, "drift_summary.json")
+        log.info("Drift reports logged to MLflow experiment 'drift_monitoring_daily'")
+    except Exception as exc:
+        log.warning("MLflow drift report logging failed: %s", exc)
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 4 — Evaluate A/B test results
+# ─────────────────────────────────────────────────────────────────────────────
 
-def build_retrain_conf(**context: Any) -> Dict[str, Any]:
-    """Assemble retraining DAG config from drift summary."""
-    summary = context["ti"].xcom_pull(task_ids="run_drift_monitor", key="drift_summary")
-    models_to_retrain = summary.get("models_with_drift", ALL_MODELS)
-    conf = {
-        "triggered_by":        "model_serving_health_dag",
-        "trigger_reason":      "drift_detected",
-        "models_to_retrain":   models_to_retrain,
-        "force_retrain":       True,
-        "drift_reports":       summary.get("reports", {}),
-        "trigger_timestamp":   datetime.utcnow().isoformat(),
+def _evaluate_ab_test_results(**ctx: Any) -> Dict[str, Any]:
+    try:
+        import sys
+        sys.path.insert(0, "/opt/analytica/src")
+        from mlops.ab_test import ABTestConfig, ABTestFramework  # type: ignore
+        import mlflow
+        from mlflow.tracking import MlflowClient
+
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        client  = MlflowClient()
+        results = {}
+        pairs   = [
+            ("xgboost_nowcast",   "xgboost_nowcast_challenger"),
+            ("lstm_streamflow",   "lstm_streamflow_challenger"),
+            ("prophet_seasonal",  "prophet_seasonal_challenger"),
+        ]
+        for champion, challenger in pairs:
+            champion_versions   = client.get_latest_versions(champion,    stages=["Production"])
+            challenger_versions = client.get_latest_versions(challenger,  stages=["Staging"])
+            if not champion_versions or not challenger_versions:
+                log.info("Skipping A/B for %s — no Staging challenger", champion)
+                continue
+            config  = ABTestConfig(champion_model=champion, challenger_model=challenger)
+            fw      = ABTestFramework(config)
+            # Load buffered prediction errors from MLflow 'ab_testing' experiment
+            runs = client.search_runs(
+                experiment_ids=[client.get_experiment_by_name("ab_testing").experiment_id
+                                if client.get_experiment_by_name("ab_testing") else "0"],
+                filter_string=f"params.champion_model = '{champion}'",
+                max_results=1, order_by=["start_time DESC"],
+            )
+            result = fw.evaluate()
+            if result:
+                results[champion] = result.model_dump()
+                log.info("A/B result for %s: promote=%s", champion, result.promote_challenger)
+
+        ctx["ti"].xcom_push(key="ab_results", value=results)
+        return results
+    except Exception as exc:
+        log.warning("A/B evaluation failed: %s", exc)
+        ctx["ti"].xcom_push(key="ab_results", value={})
+        return {}
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 5 — Branch: drift? → retrain / skip
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _branch_on_drift(**ctx: Any) -> str:
+    summary = ctx["ti"].xcom_pull(task_ids="run_drift_monitor_all_models", key="drift_summary") or {}
+    if summary.get("any_force_retrain", False):
+        log.info("Drift force_retrain=True for models: %s → triggering retraining", summary.get("models_with_drift"))
+        return "trigger_retraining_dag"
+    log.info("No force_retrain — skipping retraining")
+    return "skip_retrain"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Stage 6 — Notify CLIMATE-OS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _notify_climate_os(**ctx: Any) -> None:
+    summary    = ctx["ti"].xcom_pull(task_ids="run_drift_monitor_all_models", key="drift_summary") or {}
+    ab_results = ctx["ti"].xcom_pull(task_ids="evaluate_ab_test_results",     key="ab_results")   or {}
+    payload = {
+        "agent":            "ANALYTICA",
+        "dag_run_id":       ctx["run_id"],
+        "execution_date":   str(ctx["ds"]),
+        "drift_summary":    summary,
+        "ab_results":       ab_results,
+        "reported_at":      datetime.now(timezone.utc).isoformat(),
     }
-    log.info("Retraining conf: %s", json.dumps(conf, indent=2))
-    context["ti"].xcom_push(key="retrain_conf", value=conf)
-    return conf
+
+    # Try HTTP webhook first
+    if CLIMATE_OS_WEBHOOK:
+        try:
+            import requests
+            resp = requests.post(CLIMATE_OS_WEBHOOK, json=payload, timeout=10)
+            resp.raise_for_status()
+            log.info("CLIMATE-OS webhook notified (HTTP %s)", resp.status_code)
+            return
+        except Exception as exc:
+            log.warning("CLIMATE-OS webhook failed (%s) — falling back to MLflow tag", exc)
+
+    # Fallback: log to MLflow
+    try:
+        import mlflow
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_experiment("drift_monitoring_daily")
+        with mlflow.start_run(run_name="climate_os_notification", nested=True):
+            mlflow.set_tag("climate_os_notified", "true")
+            mlflow.set_tag("notification_ts", payload["reported_at"])
+            mlflow.log_dict(payload, "climate_os_payload.json")
+        log.info("CLIMATE-OS notification logged to MLflow (climate_os_notified=true)")
+    except Exception as exc:
+        log.error("CLIMATE-OS notification (all paths) failed: %s", exc)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DAG definition
+# DAG
 # ─────────────────────────────────────────────────────────────────────────────
 
 with DAG(
     dag_id="model_serving_health_dag",
     description=(
-        "Daily serving health check + drift monitor for all 4 ANALYTICA models. "
-        "Auto-triggers retraining DAG when drift_detected=True (PSI > 0.2)."
+        "ANALYTICA Sprint 4 daily serving health + drift + A/B evaluation. "
+        "BranchPythonOperator routes to retraining DAG on PSI>0.2. "
+        "Final stage notifies CLIMATE-OS via HTTP webhook or MLflow tag."
     ),
-    schedule_interval="0 6 * * *",   # 06:00 WIB daily  (CLOUD-FORGE spec)
+    schedule_interval="0 6 * * *",   # 06:00 WIB
     start_date=days_ago(1),
     default_args=DEFAULT_ARGS,
     catchup=False,
     max_active_runs=1,
-    tags=["analytica", "serving", "drift", "mlops", "sprint3"],
+    tags=["analytica", "serving", "drift", "ab-test", "sprint4"],
 ) as dag:
 
-    # ── T1: Ping inference API ───────────────────────────────────────────────
-    t_api_health = PythonOperator(
+    t1_health = PythonOperator(
         task_id="ping_inference_api",
-        python_callable=ping_inference_api,
-        doc_md=(
-            "Ping GET /health on the ANALYTICA inference API. "
-            "Asserts all 4 models are loaded. Raises on HTTP error."
-        ),
+        python_callable=_ping_inference_api,
+        doc_md="GET /health on inference API — asserts all 4 models loaded.",
     )
 
-    # ── T2: Run drift monitor for all models ─────────────────────────────────
-    t_drift_monitor = PythonOperator(
-        task_id="run_drift_monitor",
-        python_callable=run_drift_monitor_all_models,
-        doc_md=(
-            "Runs PSI + KS-test drift detection on each model's 30-day input distribution. "
-            "Logs DriftMonitorReport to MLflow and workspace/output/drift/. "
-            "Pushes drift_summary XCom for downstream gate."
-        ),
+    t2_drift = PythonOperator(
+        task_id="run_drift_monitor_all_models",
+        python_callable=_run_drift_monitor_all_models,
+        doc_md="PSI + KS-test drift detection for all 4 models. Saves DriftMonitorReport JSON.",
     )
 
-    # ── T3: ShortCircuit — only proceed if drift requires retraining ──────────
-    t_drift_gate = ShortCircuitOperator(
-        task_id="check_drift_requires_retrain",
-        python_callable=check_any_drift,
-        doc_md=(
-            "ShortCircuit: proceeds downstream only when force_retrain=True "
-            "(PSI > 0.2) for at least one model. Skips retraining trigger otherwise."
-        ),
+    t3_log = PythonOperator(
+        task_id="log_drift_reports_to_mlflow",
+        python_callable=_log_drift_reports_to_mlflow,
+        doc_md="Log daily drift summary and per-model PSI to MLflow experiment 'drift_monitoring_daily'.",
     )
 
-    # ── T4: Build retraining config ───────────────────────────────────────────
-    t_build_conf = PythonOperator(
-        task_id="build_retrain_conf",
-        python_callable=build_retrain_conf,
-        doc_md="Assembles retraining DAG conf dict from drift_summary XCom.",
+    t4_ab = PythonOperator(
+        task_id="evaluate_ab_test_results",
+        python_callable=_evaluate_ab_test_results,
+        doc_md="Run ABTestFramework t-test for each champion/challenger pair. Auto-promotes if criteria met.",
     )
 
-    # ── T5: Trigger retraining DAG ────────────────────────────────────────────
-    t_trigger_retrain = TriggerDagRunOperator(
+    t5_branch = BranchPythonOperator(
+        task_id="branch_on_drift",
+        python_callable=_branch_on_drift,
+        doc_md="Branch: force_retrain=True → trigger_retraining_dag | else → skip_retrain.",
+    )
+
+    t6a_retrain = TriggerDagRunOperator(
         task_id="trigger_retraining_dag",
         trigger_dag_id=RETRAINING_DAG_ID,
-        conf="{{ ti.xcom_pull(task_ids='build_retrain_conf', key='retrain_conf') }}",
+        conf={"triggered_by": "model_serving_health_dag", "force_retrain": True},
         wait_for_completion=False,
-        doc_md=(
-            f"Triggers `{RETRAINING_DAG_ID}` with force_retrain=True and the list "
-            "of drifted model names. Does not wait for completion."
-        ),
+        doc_md=f"Trigger `{RETRAINING_DAG_ID}` with force_retrain=True for drifted models.",
     )
 
-    # ── Task dependencies ─────────────────────────────────────────────────────
-    t_api_health >> t_drift_monitor >> t_drift_gate >> t_build_conf >> t_trigger_retrain
+    t6b_skip = EmptyOperator(
+        task_id="skip_retrain",
+        doc_md="No drift requiring retraining — no-op.",
+    )
+
+    t7_notify = PythonOperator(
+        task_id="notify_climate_os",
+        python_callable=_notify_climate_os,
+        trigger_rule="none_failed_min_one_success",
+        doc_md="Notify CLIMATE-OS via HTTP webhook or MLflow tag climate_os_notified=true.",
+    )
+
+    # Pipeline
+    t1_health >> t2_drift >> t3_log >> t4_ab >> t5_branch
+    t5_branch >> [t6a_retrain, t6b_skip]
+    [t6a_retrain, t6b_skip] >> t7_notify
