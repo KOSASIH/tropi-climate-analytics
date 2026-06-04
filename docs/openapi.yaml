@@ -1,0 +1,573 @@
+openapi: "3.0.3"
+info:
+  title: Tropi Climate Analytics API
+  version: "1.0.0"
+  description: |
+    Programmatic access to tropical climate data, early-warning alerts, and
+    geospatial analytics for Indonesia. Integrates NASA satellite data (Landsat,
+    MODIS, SMAP, GPM) with BMKG, KLHK, and LAPAN ground observations.
+
+    ## Authentication
+    All endpoints except public GET routes require a Bearer JWT.
+    Tokens carry a `role` claim that enforces RBAC:
+
+    | Role       | Issued to                                     | Access                            |
+    |------------|-----------------------------------------------|-----------------------------------|
+    | `public`   | Anonymous / registered developers            | Read-only public endpoints        |
+    | `partner`  | BMKG, KLHK, LAPAN                            | Read + subscribe                  |
+    | `internal` | Pipeline services (HYDROLOGIS, ATMOSPHERE …) | Ingest alerts, resolve alerts     |
+    | `admin`    | Platform operators                           | All endpoints                     |
+
+  contact:
+    name: API-GATEWAY
+    url: https://github.com/KOSASIH/tropi-climate-analytics
+
+servers:
+  - url: https://api.tropi-climate.id/v1
+    description: Production (via Kong Gateway)
+  - url: http://localhost:8000/v1
+    description: Local FastAPI development server
+
+# ---------------------------------------------------------------------------
+# Security schemes
+# ---------------------------------------------------------------------------
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: |
+        JWT signed with HS256. Include in every request as:
+        `Authorization: Bearer <token>`
+
+        Payload structure:
+        ```json
+        { "sub": "hydrologis-pipeline", "role": "internal", "iat": 1234, "exp": 5678 }
+        ```
+
+  # -------------------------------------------------------------------------
+  # Reusable schemas
+  # -------------------------------------------------------------------------
+  schemas:
+    AlertType:
+      type: string
+      enum: [flood, drought, fire, aqi, deforestation, cyclone, sst_anomaly]
+
+    AlertSeverity:
+      type: string
+      enum: [info, warning, critical, emergency]
+
+    Alert:
+      type: object
+      required:
+        - alert_id
+        - alert_type
+        - severity
+        - title
+        - description
+        - affected_area
+        - latitude
+        - longitude
+        - radius_km
+        - issued_at
+        - source_agent
+        - is_active
+      properties:
+        alert_id:
+          type: string
+          example: "flood-ciliwung-20260604-001"
+        alert_type:
+          $ref: "#/components/schemas/AlertType"
+        severity:
+          $ref: "#/components/schemas/AlertSeverity"
+        title:
+          type: string
+          example: "Flood Warning — Ciliwung River Basin"
+        description:
+          type: string
+        affected_area:
+          type: string
+          example: "Jakarta Selatan, DKI Jakarta"
+        latitude:
+          type: number
+          format: float
+          example: -6.2088
+        longitude:
+          type: number
+          format: float
+          example: 106.8456
+        radius_km:
+          type: number
+          format: float
+          example: 15.0
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        source_agent:
+          type: string
+          example: "HYDROLOGIS"
+        is_active:
+          type: boolean
+          example: true
+
+    AlertIngestion:
+      type: object
+      required:
+        - alert_id
+        - alert_type
+        - severity
+        - title
+        - description
+        - affected_area
+        - latitude
+        - longitude
+        - radius_km
+        - issued_at
+        - source_agent
+      properties:
+        alert_id:
+          type: string
+          description: Caller-generated UUID for idempotent ingestion
+          example: "flood-ciliwung-20260604-001"
+        alert_type:
+          $ref: "#/components/schemas/AlertType"
+        severity:
+          $ref: "#/components/schemas/AlertSeverity"
+        title:
+          type: string
+          maxLength: 200
+        description:
+          type: string
+          maxLength: 2000
+        affected_area:
+          type: string
+        latitude:
+          type: number
+          format: float
+        longitude:
+          type: number
+          format: float
+        radius_km:
+          type: number
+          format: float
+        issued_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+          nullable: true
+        source_agent:
+          type: string
+          description: Pipeline identifier posting this alert
+          example: "HYDROLOGIS"
+        metadata:
+          type: object
+          nullable: true
+          description: Optional structured payload (streamflow readings, AQI values, etc.)
+          additionalProperties: true
+
+    AlertResolveRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          nullable: true
+          description: Human-readable resolution reason
+          example: "River level dropped below flood threshold"
+
+    AlertResolveResponse:
+      type: object
+      required: [alert_id, resolved_at, resolved_by, message]
+      properties:
+        alert_id:
+          type: string
+        resolved_at:
+          type: string
+          format: date-time
+        resolved_by:
+          type: string
+          description: JWT sub of the calling service
+        message:
+          type: string
+
+    AlertSubscription:
+      type: object
+      required: [email, alert_types, provinces]
+      properties:
+        email:
+          type: string
+          format: email
+        alert_types:
+          type: array
+          items:
+            $ref: "#/components/schemas/AlertType"
+        provinces:
+          type: array
+          items:
+            type: string
+        min_severity:
+          $ref: "#/components/schemas/AlertSeverity"
+
+    Error:
+      type: object
+      properties:
+        detail:
+          type: string
+
+  # -------------------------------------------------------------------------
+  # Reusable responses
+  # -------------------------------------------------------------------------
+  responses:
+    Unauthorized:
+      description: Missing or invalid JWT
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+    Forbidden:
+      description: JWT valid but role is not authorised for this endpoint
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/Error"
+          example:
+            detail: "Role 'public' is not authorized. Accepted roles: ['admin', 'internal']"
+
+  # -------------------------------------------------------------------------
+  # Rate-limit response headers (applied by Kong Gateway)
+  # -------------------------------------------------------------------------
+  headers:
+    X-RateLimit-Limit:
+      description: Max requests per minute for this tier
+      schema:
+        type: integer
+    X-RateLimit-Remaining:
+      description: Requests remaining in current window
+      schema:
+        type: integer
+    X-RateLimit-Reset:
+      description: Unix timestamp when the window resets
+      schema:
+        type: integer
+
+# ---------------------------------------------------------------------------
+# Global security (override per endpoint as needed)
+# ---------------------------------------------------------------------------
+security:
+  - BearerAuth: []
+
+# ---------------------------------------------------------------------------
+# Paths
+# ---------------------------------------------------------------------------
+paths:
+
+  # ==========================================================================
+  # ALERTS
+  # ==========================================================================
+
+  /alerts/active:
+    get:
+      operationId: getActiveAlerts
+      summary: List active climate alerts
+      description: |
+        Returns all currently active climate alerts. Aggregated from ATMOSPHERE,
+        HYDROLOGIS, and GEOSPATIAL pipeline outputs.
+
+        **Rate limit:** 1,000 req/min (public/partner), 5,000 req/min (internal/admin).
+      security: []   # public endpoint — no auth required
+      tags: [Alerts]
+      parameters:
+        - name: alert_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AlertType"
+        - name: severity
+          in: query
+          schema:
+            $ref: "#/components/schemas/AlertSeverity"
+        - name: province
+          in: query
+          schema:
+            type: string
+          example: "DKI Jakarta"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 1000
+            default: 100
+      responses:
+        "200":
+          description: Array of active alerts
+          headers:
+            X-RateLimit-Limit:
+              $ref: "#/components/headers/X-RateLimit-Limit"
+            X-RateLimit-Remaining:
+              $ref: "#/components/headers/X-RateLimit-Remaining"
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Alert"
+
+    post:
+      operationId: ingestAlert
+      summary: "[INTERNAL] Ingest a new alert from a pipeline service"
+      description: |
+        **Service-to-service endpoint — not for public or partner use.**
+
+        Accepts alert payloads from internal pipeline services:
+        - **HYDROLOGIS** — `FloodEarlyWarningPipeline`
+        - **ATMOSPHERE** — AQI / severe weather pipeline
+        - **GEOSPATIAL** — deforestation detection pipeline
+
+        On success:
+        1. Alert is persisted with `is_active=true`.
+        2. Webhook dispatcher forwards the event to all matching subscribers
+           (HMAC-SHA256 signed payloads, exponential-backoff retry).
+
+        **Required role:** `internal` or `admin`  
+        **Rate limit:** 5,000 req/min (internal tier)
+
+        ### Example — HYDROLOGIS flood alert
+        ```json
+        {
+          "alert_id": "flood-ciliwung-20260604-001",
+          "alert_type": "flood",
+          "severity": "critical",
+          "title": "Flood Warning — Ciliwung River Basin",
+          "description": "Streamflow at Katulampa gauge exceeded 200 m³/s. 6-hour flood ETA for North Jakarta.",
+          "affected_area": "Jakarta Pusat, Jakarta Utara, DKI Jakarta",
+          "latitude": -6.1751,
+          "longitude": 106.8650,
+          "radius_km": 25.0,
+          "issued_at": "2026-06-04T04:30:00Z",
+          "source_agent": "HYDROLOGIS",
+          "metadata": { "streamflow_m3s": 237.4, "gauge": "Katulampa", "model": "SWAT" }
+        }
+        ```
+      tags: [Alerts, Internal]
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertIngestion"
+      responses:
+        "201":
+          description: Alert persisted and webhook dispatch triggered
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Alert"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "422":
+          description: Validation error — check request body against AlertIngestion schema
+
+  /alerts/{alert_id}/resolve:
+    post:
+      operationId: resolveAlert
+      summary: "[INTERNAL] Mark an alert as resolved"
+      description: |
+        **Service-to-service endpoint — not for public or partner use.**
+
+        Marks an active alert as resolved (`is_active=false`). Triggers a
+        resolution notification to all subscribers who received the original alert.
+
+        **Callers:**
+        - HYDROLOGIS — when streamflow drops below flood threshold
+        - ATMOSPHERE — when AQI returns to safe level
+        - Admin manual resolution via management tooling
+
+        **Required role:** `internal` or `admin`
+      tags: [Alerts, Internal]
+      security:
+        - BearerAuth: []
+      parameters:
+        - name: alert_id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "flood-ciliwung-20260604-001"
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertResolveRequest"
+            example:
+              reason: "River level dropped below flood threshold at 08:42 UTC"
+      responses:
+        "200":
+          description: Alert marked as resolved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AlertResolveResponse"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "403":
+          $ref: "#/components/responses/Forbidden"
+        "404":
+          description: Alert not found or already resolved
+
+  /alerts/history:
+    get:
+      operationId: getAlertHistory
+      summary: Historical alert records
+      description: Returns resolved/expired alerts for trend analysis.
+      security: []
+      tags: [Alerts]
+      parameters:
+        - name: days
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 365
+            default: 30
+        - name: alert_type
+          in: query
+          schema:
+            $ref: "#/components/schemas/AlertType"
+      responses:
+        "200":
+          description: Historical alert list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Alert"
+
+  /alerts/subscribe:
+    post:
+      operationId: subscribeToAlerts
+      summary: Subscribe to alert notifications
+      tags: [Alerts]
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AlertSubscription"
+      responses:
+        "201":
+          description: Subscription registered
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                  id:
+                    type: string
+
+  /alerts/subscribe/{subscription_id}:
+    delete:
+      operationId: unsubscribeFromAlerts
+      summary: Cancel alert subscription
+      tags: [Alerts]
+      security: []
+      parameters:
+        - name: subscription_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Subscription cancelled
+
+  # ==========================================================================
+  # CLIMATE (stubs — full spec in Sprint 1)
+  # ==========================================================================
+
+  /climate/current:
+    get:
+      operationId: getClimateCurrentConditions
+      summary: Current climate conditions
+      tags: [Climate]
+      security: []
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: lon
+          in: query
+          required: true
+          schema:
+            type: number
+      responses:
+        "200":
+          description: Current conditions at the requested coordinate
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /climate/forecast:
+    get:
+      operationId: getClimateForecast
+      summary: 72-hour precipitation / temperature forecast
+      tags: [Climate]
+      security: []
+      parameters:
+        - name: lat
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: lon
+          in: query
+          required: true
+          schema:
+            type: number
+        - name: hours
+          in: query
+          schema:
+            type: integer
+            default: 72
+      responses:
+        "200":
+          description: Forecast time-series
+          content:
+            application/json:
+              schema:
+                type: object
+
+  # ==========================================================================
+  # GEOSPATIAL (stubs)
+  # ==========================================================================
+
+  /geo/districts:
+    get:
+      operationId: listDistricts
+      summary: Indonesian district boundaries (GeoJSON)
+      tags: [Geospatial]
+      security: []
+      responses:
+        "200":
+          description: GeoJSON FeatureCollection
+          content:
+            application/json:
+              schema:
+                type: object
