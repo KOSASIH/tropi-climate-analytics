@@ -1,0 +1,114 @@
+# ============================================================
+# Prometheus Alerting Rules — Tropi Climate Analytics
+# SLO: 99.5% uptime | MTTR < 30min
+# ============================================================
+
+groups:
+
+  # ——— API Availability SLO ———————————————————————————————
+  - name: api_availability
+    rules:
+      - alert: APIHighErrorRate
+        expr: |
+          sum(rate(http_requests_total{job="tropi-api",status=~"5.."}[5m]))
+          /
+          sum(rate(http_requests_total{job="tropi-api"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          team: platform
+        annotations:
+          summary: "API error rate > 1% (SLO breach risk)"
+          description: "Error rate is {{ $value | humanizePercentage }} over last 5 min."
+
+      - alert: APIHighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            rate(http_request_duration_seconds_bucket{job="tropi-api"}[5m])
+          ) > 2.0
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "API p99 latency > 2 seconds"
+          description: "p99 is {{ $value }}s — investigate API performance."
+
+      - alert: APIPodCrashLooping
+        expr: rate(kube_pod_container_status_restarts_total{namespace="tropi-climate",container="api"}[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "API pod is crash-looping"
+
+  # ——— ETL Pipeline Throughput ——————————————————————————
+  - name: etl_pipeline
+    rules:
+      - alert: ETLKafkaConsumerLagHigh
+        expr: kafka_consumer_lag{job="tropi-etl-worker"} > 100000
+        for: 10m
+        labels:
+          severity: warning
+          team: data
+        annotations:
+          summary: "Kafka consumer lag > 100k messages"
+          description: "ETL workers are falling behind. Current lag: {{ $value }}"
+
+      - alert: ETLPipelineStaleSatelliteIngestion
+        expr: |
+          (time() - max(etl_last_successful_ingest_timestamp{source=~"landsat|modis|smap|gpm"})) > 7200
+        for: 0m
+        labels:
+          severity: critical
+          team: data
+        annotations:
+          summary: "Satellite data ingestion stale > 2 hours"
+          description: "No successful satellite ingestion in last 2h. Check ETL workers."
+
+  # ——— Database Health ————————————————————————————————
+  - name: database
+    rules:
+      - alert: RDSConnectionsHigh
+        expr: aws_rds_database_connections_maximum{dbclusteridentifier=~"tropi-climate.*"} > 800
+        for: 5m
+        labels:
+          severity: warning
+          team: platform
+        annotations:
+          summary: "RDS connections > 800 (max 1000)"
+          description: "DB connection pool near exhaustion. Enable connection pooling (PgBouncer)."
+
+      - alert: RDSReplicationLag
+        expr: aws_rds_replica_lag_maximum > 60
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RDS replica lag > 60 seconds"
+
+      - alert: RDSDiskSpaceLow
+        expr: aws_rds_free_storage_space_minimum < 10737418240  # 10GB
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "RDS free disk space < 10 GB"
+
+  # ——— Uptime SLO Burn Rate ————————————————————————————
+  - name: slo_burn_rate
+    rules:
+      - alert: SLOBudgetBurnRateFast
+        expr: |
+          (
+            sum(rate(http_requests_total{job="tropi-api",status=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="tropi-api"}[1h]))
+          ) > 14.4 * 0.005   # 14.4x burn on 0.5% error budget
+        for: 2m
+        labels:
+          severity: critical
+          page: "true"
+        annotations:
+          summary: "SLO error budget burning 14x faster than allowed"
+          description: "Immediate action required to protect 99.5% uptime SLA."

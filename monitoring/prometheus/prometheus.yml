@@ -1,0 +1,85 @@
+# ============================================================
+# Prometheus Configuration — Tropi Climate Analytics
+# Scrapes: API, ETL workers, RDS exporter, Redis exporter,
+#          MSK JMX/Node exporters, Kubernetes node metrics
+# ============================================================
+
+global:
+  scrape_interval:     15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: tropi-climate-prod
+    region:  ap-southeast-3
+
+rule_files:
+  - /etc/prometheus/alerts/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+
+  # ——— Tropi API ———————————————————————————————————————
+  - job_name: tropi-api
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: { names: [tropi-climate] }
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: tropi-api
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+
+  # ——— ETL Workers ———————————————————————————————————
+  - job_name: tropi-etl-worker
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces: { names: [tropi-climate] }
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_label_app]
+        action: keep
+        regex: tropi-etl-worker
+
+  # ——— RDS Exporter ——————————————————————————————————
+  - job_name: rds-exporter
+    static_configs:
+      - targets: ["rds-exporter:9042"]
+        labels: { service: aurora-postgresql }
+    metrics_path: /metrics
+
+  # ——— Redis Exporter ————————————————————————————————
+  - job_name: redis-exporter
+    static_configs:
+      - targets: ["redis-exporter:9121"]
+        labels: { service: elasticache-redis }
+
+  # ——— MSK JMX Exporter ——————————————————————————————
+  - job_name: kafka-jmx
+    static_configs:
+      - targets:
+          - "kafka-broker-0:11001"
+          - "kafka-broker-1:11001"
+          - "kafka-broker-2:11001"
+        labels: { service: msk-kafka }
+
+  # ——— Kubernetes Node Exporter ————————————————————————
+  - job_name: kubernetes-nodes
+    scheme: https
+    tls_config:
+      ca_file: /var/run/secrets/kubernetes.io/serviceaccount/ca.crt
+    bearer_token_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    kubernetes_sd_configs:
+      - role: node
+    relabel_configs:
+      - action: labelmap
+        regex: __meta_kubernetes_node_label_(.+)

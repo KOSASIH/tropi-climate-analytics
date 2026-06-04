@@ -1,0 +1,81 @@
+# ============================================================
+# Tropi Climate Analytics — Platform Overview Dashboard
+# Key panels: API latency, pipeline throughput, DB connections,
+#             error rates, SLO burn rate, Kafka lag
+# ============================================================
+{
+  "title": "Tropi Climate — Platform Overview",
+  "uid": "tropi-platform-overview",
+  "tags": ["tropi-climate", "platform", "slo"],
+  "refresh": "30s",
+  "time": { "from": "now-3h", "to": "now" },
+  "panels": [
+    {
+      "id": 1, "title": "API Request Rate (RPS)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{job=\"tropi-api\"}[1m]))",
+        "legendFormat": "Requests/sec"
+      }]
+    },
+    {
+      "id": 2, "title": "API p50 / p95 / p99 Latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, rate(http_request_duration_seconds_bucket{job=\"tropi-api\"}[5m]))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job=\"tropi-api\"}[5m]))", "legendFormat": "p95" },
+        { "expr": "histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=\"tropi-api\"}[5m]))", "legendFormat": "p99" }
+      ]
+    },
+    {
+      "id": 3, "title": "API Error Rate (%)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 8 },
+      "targets": [{
+        "expr": "sum(rate(http_requests_total{job=\"tropi-api\",status=~\"5..\"}[5m])) / sum(rate(http_requests_total{job=\"tropi-api\"}[5m])) * 100",
+        "legendFormat": "Error %"
+      }],
+      "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 0.5 }, { "color": "red", "value": 1 }] }
+    },
+    {
+      "id": 4, "title": "ETL Pipeline Throughput (events/sec)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [{
+        "expr": "sum(rate(etl_records_processed_total[1m])) by (source)",
+        "legendFormat": "{{ source }}"
+      }]
+    },
+    {
+      "id": 5, "title": "Kafka Consumer Lag",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [{
+        "expr": "sum(kafka_consumer_lag) by (topic)",
+        "legendFormat": "{{ topic }}"
+      }]
+    },
+    {
+      "id": 6, "title": "RDS Active Connections",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 8 },
+      "targets": [{
+        "expr": "aws_rds_database_connections_maximum{dbclusteridentifier=~\"tropi-climate.*\"}",
+        "legendFormat": "DB Connections"
+      }],
+      "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 600 }, { "color": "red", "value": 800 }] }
+    },
+    {
+      "id": 7, "title": "SLO Error Budget Remaining (%)",
+      "type": "gauge",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 20 },
+      "targets": [{
+        "expr": "(1 - (sum(increase(http_requests_total{job=\"tropi-api\",status=~\"5..\"}[30d])) / sum(increase(http_requests_total{job=\"tropi-api\"}[30d]))) / 0.005) * 100",
+        "legendFormat": "Budget %"
+      }],
+      "thresholds": { "steps": [{ "color": "red", "value": null }, { "color": "yellow", "value": 25 }, { "color": "green", "value": 50 }] }
+    }
+  ]
+}

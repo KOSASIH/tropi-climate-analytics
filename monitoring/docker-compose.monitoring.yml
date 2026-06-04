@@ -1,0 +1,86 @@
+# ============================================================
+# Prometheus + Grafana + Alertmanager Compose Stack
+# ============================================================
+version: "3.9"
+
+services:
+
+  prometheus:
+    image: prom/prometheus:v2.51.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/alerts.yml:/etc/prometheus/alerts/alerts.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--storage.tsdb.retention.time=30d'
+      - '--web.enable-lifecycle'
+      - '--web.enable-admin-api'
+    networks: [monitoring]
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER:     admin
+      GF_SECURITY_ADMIN_PASSWORD: "${GRAFANA_ADMIN_PASSWORD}"
+      GF_SERVER_DOMAIN:           monitoring.tropi-climate.id
+      GF_SERVER_ROOT_URL:         https://monitoring.tropi-climate.id
+      GF_FEATURE_TOGGLES_ENABLE:  publicDashboards
+      GF_SMTP_ENABLED:            "true"
+      GF_SMTP_HOST:               "email-smtp.ap-southeast-3.amazonaws.com:587"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on: [prometheus]
+    networks: [monitoring]
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager-data:/alertmanager
+    networks: [monitoring]
+
+  rds-exporter:
+    image: percona/rds_exporter:0.7.1
+    container_name: rds-exporter
+    restart: unless-stopped
+    ports:
+      - "9042:9042"
+    environment:
+      AWS_DEFAULT_REGION: ap-southeast-3
+    networks: [monitoring]
+
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.61.0
+    container_name: redis-exporter
+    restart: unless-stopped
+    ports:
+      - "9121:9121"
+    environment:
+      REDIS_ADDR: "${REDIS_PRIMARY_ENDPOINT}:6379"
+      REDIS_PASSWORD: "${REDIS_PASSWORD}"
+    networks: [monitoring]
+
+volumes:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:
+
+networks:
+  monitoring:
+    driver: bridge

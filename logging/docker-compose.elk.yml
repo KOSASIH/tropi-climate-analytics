@@ -1,0 +1,82 @@
+# ============================================================
+# ELK Stack Compose — Elasticsearch + Logstash + Kibana
+# ============================================================
+version: "3.9"
+
+services:
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: elasticsearch
+    restart: unless-stopped
+    environment:
+      node.name:               es-node-1
+      cluster.name:            tropi-climate-logs
+      discovery.type:          single-node
+      ES_JAVA_OPTS:            "-Xms4g -Xmx4g"
+      xpack.security.enabled:  "true"
+      xpack.security.http.ssl.enabled: "true"
+      xpack.security.transport.ssl.enabled: "true"
+      ELASTIC_PASSWORD:        "${ELASTIC_PASSWORD}"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+      - ./elasticsearch/certs:/usr/share/elasticsearch/config/certs:ro
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile:  { soft: 65536, hard: 65536 }
+    networks: [elk]
+
+  logstash:
+    image: docker.elastic.co/logstash/logstash:8.13.0
+    container_name: logstash
+    restart: unless-stopped
+    ports:
+      - "5044:5044"
+      - "9600:9600"
+    environment:
+      ELASTIC_PASSWORD:  "${ELASTIC_PASSWORD}"
+      ES_HOST:           elasticsearch
+      KAFKA_BOOTSTRAP_BROKERS: "${KAFKA_BOOTSTRAP_BROKERS}"
+      S3_LOGS_BUCKET:    "tropi-climate-prod-logs"
+    volumes:
+      - ./logstash/pipeline:/usr/share/logstash/pipeline:ro
+      - ./logstash/certs:/etc/logstash/certs:ro
+    depends_on: [elasticsearch]
+    networks: [elk]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: kibana
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS:    "https://elasticsearch:9200"
+      ELASTICSEARCH_USERNAME: kibana_system
+      ELASTICSEARCH_PASSWORD: "${KIBANA_SYSTEM_PASSWORD}"
+      SERVER_PUBLICBASEURL:   "https://logs.tropi-climate.id"
+      XPACK_SECURITY_ENABLED: "true"
+      XPACK_FLEET_ENABLED:    "true"
+    depends_on: [elasticsearch]
+    networks: [elk]
+
+  filebeat:
+    image: docker.elastic.co/beats/filebeat:8.13.0
+    container_name: filebeat
+    restart: unless-stopped
+    user: root
+    volumes:
+      - ./filebeat/filebeat.yml:/usr/share/filebeat/filebeat.yml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    depends_on: [logstash]
+    networks: [elk]
+
+volumes:
+  es-data:
+
+networks:
+  elk:
+    driver: bridge
