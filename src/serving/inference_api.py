@@ -1,331 +1,300 @@
 """
-ANALYTICA — Production Model Inference API
-src/serving/inference_api.py
+Inference API — ANALYTICA Sprint 5 F1
+FastAPI serving layer for all 5 ANALYTICA predictive models.
 
-FastAPI app exposing POST /predict/{model_name} for all 4 live ANALYTICA models.
-JWT auth header is passed through to API-GATEWAY — not validated here.
-MLflow model registry loads latest 'Production' stage artifact on startup.
+Endpoints:
+  POST /predict/precipitation  → XGBoostPrecipModel
+  POST /predict/seasonal       → ProphetSeasonalModel
+  POST /predict/landcover      → CNNLandCoverModel
+  POST /predict/streamflow     → LSTMStreamflowModel
+  POST /predict/climate        → TFTClimateModel
 
-Response contract:
-  prediction          list[float]     raw model output
-  confidence_interval CI95 lower/upper (where available)
-  shap_top5           top-5 SHAP feature importances
-  model_version       MLflow model version tag
-  inference_duration_ms  wall-clock inference time
+Request flow: InferenceCache.get() → HIT: return cached
+                                   → MISS: FeatureStoreClient.get_features()
+                                           → model.predict()
+                                           → InferenceCache.set()
+                                           → return
 
-Prometheus: instruments tropi_model_inference_duration_seconds{model=<name>}
-            for CLOUD-FORGE SLA rules (P99High >5s, P99Critical >15s).
-
-Run:
-  uvicorn serving.inference_api:app --host 0.0.0.0 --port 8080 --workers 2
+Prometheus:
+  tropi_inference_latency_seconds{model_id, endpoint}      ← Histogram
+  tropi_inference_requests_total{model_id, status}          ← Counter
 """
+
 from __future__ import annotations
 
 import logging
 import os
 import time
-from typing import Any, Dict, List, Optional, Tuple
+from datetime import date, datetime, timezone
+from typing import Any, Dict, List, Optional
 
-import numpy as np
-from fastapi import FastAPI, Header, HTTPException, Request, Response, status
-from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST, Histogram
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-log = logging.getLogger("analytica.inference_api")
+from src.data.metrics import INFERENCE_LATENCY, INFERENCE_REQUESTS
+from src.serving.inference_cache import InferenceCache
+from src.data.feature_store_client import FeatureStoreClient
+from src.explainability.shap_explainer import SHAPExplainer
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Prometheus metrics
-# ─────────────────────────────────────────────────────────────────────────────
+logger = logging.getLogger(__name__)
 
-INFERENCE_BUCKETS = (
-    0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 3.0,
-    5.0,   # TropiModelInferenceP99High threshold
-    7.5, 10.0, 12.5,
-    15.0,  # TropiModelInferenceP99Critical threshold
-    20.0, 30.0, float("inf"),
-)
-
-INFERENCE_HISTOGRAM = Histogram(
-    "tropi_model_inference_duration_seconds",
-    "Model inference latency (seconds) — drives TropiModelInferenceP99High/Critical SLA rules",
-    ["model"],
-    buckets=INFERENCE_BUCKETS,
-)
-
-REQUEST_COUNTER = Counter(
-    "tropi_inference_api_requests_total",
-    "Total inference API requests",
-    ["model", "status_code"],
-)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Model name constants
-# ─────────────────────────────────────────────────────────────────────────────
-
-MODEL_XGB_NOWCAST       = "xgboost_nowcast"
-MODEL_PROPHET_SEASONAL  = "prophet_seasonal"
-MODEL_CNN_LAND_COVER    = "cnn_land_cover"
-MODEL_LSTM_STREAMFLOW   = "lstm_streamflow"
-
-ALL_MODELS = [MODEL_XGB_NOWCAST, MODEL_PROPHET_SEASONAL,
-              MODEL_CNN_LAND_COVER, MODEL_LSTM_STREAMFLOW]
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Pydantic schemas
-# ─────────────────────────────────────────────────────────────────────────────
-
-class PredictRequest(BaseModel):
-    features: Dict[str, Any] = Field(
-        ...,
-        description="Feature dict — keys depend on model. See /docs.",
-        example={"station": "manggarai", "rainfall_mm": [12.3, 0.0, 5.1], "lookback_days": 14},
-    )
-    horizon_hours: Optional[int] = Field(None, ge=1, le=168, description="Forecast horizon (xgb, prophet)")
-    station: Optional[str] = Field(None, description="Gauge station ID (lstm_streamflow)")
-    province_ids: Optional[List[int]] = Field(None, description="Province subset filter (cnn_land_cover)")
-
-
-class ConfidenceInterval(BaseModel):
-    lower: List[float]
-    upper: List[float]
-    level: float = 0.95
-
-
-class SHAPFeatureImportance(BaseModel):
-    feature: str
-    shap_value: float
-    direction: str  # "positive" | "negative"
-
-
-class PredictResponse(BaseModel):
-    model: str
-    model_version: str
-    prediction: List[float]
-    confidence_interval: Optional[ConfidenceInterval] = None
-    shap_top5: List[SHAPFeatureImportance] = Field(default_factory=list)
-    inference_duration_ms: float
-    warning: Optional[str] = None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# MLflow model registry loader
-# ─────────────────────────────────────────────────────────────────────────────
-
-_model_cache:   Dict[str, Any] = {}
-_version_cache: Dict[str, str] = {}
-
-
-def _load_model(model_name: str) -> Tuple[Any, str]:
-    """Pull latest 'Production' stage artifact from MLflow registry on first call."""
-    if model_name in _model_cache:
-        return _model_cache[model_name], _version_cache[model_name]
-
-    mlflow_uri = os.getenv("ANALYTICA_MLFLOW_TRACKING_URI", "http://mlflow:5000")
-    try:
-        import mlflow
-        from mlflow.tracking import MlflowClient
-        mlflow.set_tracking_uri(mlflow_uri)
-        client = MlflowClient()
-        versions = client.get_latest_versions(model_name, stages=["Production"])
-        if not versions:
-            raise RuntimeError(f"No Production version for model '{model_name}'")
-        mv = versions[0]
-        model = mlflow.pyfunc.load_model(f"models:/{model_name}/Production")
-        _model_cache[model_name]   = model
-        _version_cache[model_name] = mv.version
-        log.info("Loaded %s v%s from MLflow Production registry", model_name, mv.version)
-        return model, mv.version
-    except Exception as exc:
-        log.warning("MLflow load failed for %s: %s — stub mode", model_name, exc)
-        _model_cache[model_name]   = None
-        _version_cache[model_name] = "stub-0"
-        return None, "stub-0"
-
-
-def _compute_shap_top5(model: Any, features_df: Any) -> List[SHAPFeatureImportance]:
-    """Compute SHAP values and return top-5 by absolute magnitude."""
-    try:
-        import shap, pandas as pd
-        if hasattr(model, "_model_impl") and hasattr(model._model_impl, "get_booster"):
-            explainer = shap.TreeExplainer(model._model_impl)
-        else:
-            explainer = shap.Explainer(model.predict, features_df)
-        shap_vals = explainer(features_df)
-        vals = shap_vals.values[0] if hasattr(shap_vals, "values") else np.zeros(features_df.shape[1])
-        cols = features_df.columns.tolist()
-        ranked = sorted(zip(cols, vals), key=lambda x: abs(x[1]), reverse=True)[:5]
-        return [
-            SHAPFeatureImportance(
-                feature=c, shap_value=round(float(v), 6),
-                direction="positive" if v >= 0 else "negative",
-            )
-            for c, v in ranked
-        ]
-    except Exception as exc:
-        log.debug("SHAP computation skipped: %s", exc)
-        return []
-
-
-def _compute_ci(raw_pred: np.ndarray, model_name: str) -> Optional[ConfidenceInterval]:
-    """Derive confidence intervals where the model supports it."""
-    try:
-        noise_pct = {"xgboost_nowcast": 0.12, "prophet_seasonal": 0.18,
-                     "cnn_land_cover": 0.08, "lstm_streamflow": 0.15}
-        pct = noise_pct.get(model_name, 0.10)
-        half = np.abs(raw_pred) * pct
-        return ConfidenceInterval(
-            lower=np.round(raw_pred - 1.96 * half, 4).tolist(),
-            upper=np.round(raw_pred + 1.96 * half, 4).tolist(),
-        )
-    except Exception:
-        return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# FastAPI application
-# ─────────────────────────────────────────────────────────────────────────────
-
+# ---------------------------------------------------------------------------
+# App
+# ---------------------------------------------------------------------------
 app = FastAPI(
     title="ANALYTICA Inference API",
-    description=(
-        "Production model serving for Tropi Climate Analytics. "
-        "JWT auth header is forwarded from API-GATEWAY — not validated here. "
-        "Exposes tropi_model_inference_duration_seconds histogram for CLOUD-FORGE SLA rules."
-    ),
-    version="3.0.0",
+    version="1.0.0",
+    description="Multi-model climate prediction endpoints with cache-aside and SHAP explainability.",
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
+
+# ---------------------------------------------------------------------------
+# Shared singletons (initialised at startup)
+# ---------------------------------------------------------------------------
+_CACHE: InferenceCache
+_FEATURE_STORE: FeatureStoreClient
+_SHAP: SHAPExplainer
+_MODEL_REGISTRY: Dict[str, Any] = {}
+_MODELS_LOADED: int = 0
 
 
 @app.on_event("startup")
-async def startup():
-    for m in ALL_MODELS:
-        _load_model(m)
-        INFERENCE_HISTOGRAM.labels(model=m)  # seed label in /metrics
-    log.info("ANALYTICA Inference API ready — %d models loaded", len(_model_cache))
+async def startup() -> None:
+    global _CACHE, _FEATURE_STORE, _SHAP, _MODEL_REGISTRY, _MODELS_LOADED
+    _CACHE = InferenceCache()
+    _FEATURE_STORE = FeatureStoreClient()
+    _SHAP = SHAPExplainer()
+    _MODEL_REGISTRY = _load_models()
+    _MODELS_LOADED = len(_MODEL_REGISTRY)
+    logger.info("ANALYTICA Inference API ready — %d models loaded", _MODELS_LOADED)
 
 
-@app.get("/metrics", include_in_schema=False)
-async def metrics_endpoint():
-    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+def _load_models() -> Dict[str, Any]:
+    """Lazy-load all registered ANALYTICA models. Returns empty stubs if not available."""
+    registry: Dict[str, Any] = {}
+    model_loaders = {
+        "xgb_precip":   "src.models.xgboost_nowcast.XGBoostPrecipModel",
+        "prophet":       "src.models.prophet_seasonal.ProphetSeasonalModel",
+        "cnn_landcover": "src.models.cnn_land_cover.CNNLandCoverModel",
+        "lstm_stream":   "src.models.lstm_streamflow.LSTMStreamflowModel",
+        "tft_climate":   "src.models.climate_transformer.TFTClimateModel",
+    }
+    for model_id, dotpath in model_loaders.items():
+        try:
+            module_path, class_name = dotpath.rsplit(".", 1)
+            import importlib
+            mod = importlib.import_module(module_path)
+            cls = getattr(mod, class_name)
+            registry[model_id] = cls.load_from_registry()
+            logger.info("Loaded model: %s", model_id)
+        except Exception as exc:
+            logger.warning("Model %s unavailable (%s) — stub installed", model_id, exc)
+            registry[model_id] = _ModelStub(model_id)
+    return registry
 
 
-@app.get("/health", include_in_schema=False)
-async def health():
-    loaded = {m: (m in _model_cache and _model_cache[m] is not None) for m in ALL_MODELS}
-    return {"status": "ok", "models": loaded}
+# ---------------------------------------------------------------------------
+# Schemas
+# ---------------------------------------------------------------------------
+
+class PredictionRequest(BaseModel):
+    entity_id:        str        = Field(..., description="Entity identifier (e.g. BMKG station ID)")
+    grid_cell_id:     str        = Field(..., description="Grid cell ID (4km resolution)")
+    forecast_horizon: int        = Field(..., ge=1, le=720, description="Forecast horizon in hours")
+    issued_date:      date       = Field(..., description="Date for which forecast is issued")
 
 
-@app.get("/readyz", include_in_schema=False)
-async def readiness():
-    if not any(_model_cache.values()):
-        raise HTTPException(status_code=503, detail="No models loaded")
-    return {"status": "ready"}
+class PredictionResponse(BaseModel):
+    model_id:              str
+    prediction:            Any
+    confidence_interval:   Optional[Dict[str, float]]
+    feature_importance_top5: List[Dict[str, Any]]
+    cache_hit:             bool
+    latency_ms:            float
 
 
-# ── Core inference handler ────────────────────────────────────────────────────
+class HealthResponse(BaseModel):
+    status:                  str
+    models_loaded:           int
+    cache_available:         bool
+    feature_store_available: bool
 
-def _infer(model_name: str, request: PredictRequest) -> PredictResponse:
-    import pandas as pd
 
-    model, version = _load_model(model_name)
-    features_df = pd.DataFrame([request.features])
+# ---------------------------------------------------------------------------
+# Core inference helper
+# ---------------------------------------------------------------------------
 
+def _run_inference(
+    model_id: str,
+    endpoint: str,
+    request: PredictionRequest,
+) -> PredictionResponse:
     t0 = time.perf_counter()
-    with INFERENCE_HISTOGRAM.labels(model=model_name).time():
-        if model is not None:
-            raw = model.predict(features_df)
-            prediction = np.atleast_1d(raw).tolist()
-        else:
-            prediction = [0.0]
-    elapsed_ms = round((time.perf_counter() - t0) * 1000, 3)
+    model = _MODEL_REGISTRY.get(model_id)
+    if model is None:
+        INFERENCE_REQUESTS.labels(model_id=model_id, status="error").inc()
+        raise HTTPException(status_code=503, detail=f"Model {model_id} not loaded")
 
-    shap_top5 = _compute_shap_top5(model, features_df) if model is not None else []
-    ci = _compute_ci(np.array(prediction), model_name)
-    warning = "stub mode — model not yet in MLflow Production registry" if model is None else None
+    cache_key_input = request.model_dump()
+    model_version = getattr(model, "version", "latest")
 
-    REQUEST_COUNTER.labels(model=model_name, status_code="200").inc()
-    return PredictResponse(
-        model=model_name,
-        model_version=version,
+    # --- Cache check ---
+    cached = _CACHE.get(model_id, model_version, cache_key_input)
+    if cached is not None:
+        latency_ms = (time.perf_counter() - t0) * 1000
+        INFERENCE_REQUESTS.labels(model_id=model_id, status="cache_hit").inc()
+        INFERENCE_LATENCY.labels(model_id=model_id, endpoint=endpoint).observe(latency_ms / 1000)
+        return PredictionResponse(
+            model_id=model_id,
+            prediction=cached["prediction"],
+            confidence_interval=cached.get("confidence_interval"),
+            feature_importance_top5=cached.get("feature_importance_top5", []),
+            cache_hit=True,
+            latency_ms=round(latency_ms, 2),
+        )
+
+    # --- Feature retrieval ---
+    try:
+        features_df = _FEATURE_STORE.get_online_features(
+            entity_rows=[{
+                "grid_cell_id": request.grid_cell_id,
+                "station_id":   request.entity_id,
+            }],
+            feature_refs=getattr(model, "FEATURE_REFS", []),
+        )
+    except Exception as exc:
+        logger.warning("Feature store unavailable for %s: %s — using empty features", model_id, exc)
+        import pandas as pd
+        features_df = pd.DataFrame()
+
+    # --- Inference ---
+    try:
+        raw_result = model.predict(
+            features=features_df,
+            forecast_horizon=request.forecast_horizon,
+            issued_date=request.issued_date,
+        )
+    except Exception as exc:
+        INFERENCE_REQUESTS.labels(model_id=model_id, status="error").inc()
+        raise HTTPException(status_code=500, detail=f"Inference error: {exc}") from exc
+
+    prediction       = raw_result.get("prediction")
+    conf_interval    = raw_result.get("confidence_interval")
+
+    # --- SHAP explainability (top-5 subset of top-10) ---
+    try:
+        shap_result = _SHAP.explain_for_model(
+            model_id=model_id,
+            model=model,
+            features=features_df,
+            grid_cell_id=request.grid_cell_id,
+            issued_date=str(request.issued_date),
+        )
+        importance_top5 = sorted(shap_result, key=lambda x: abs(x["shap_value"]), reverse=True)[:5]
+    except Exception as exc:
+        logger.warning("SHAP unavailable for %s: %s", model_id, exc)
+        importance_top5 = []
+
+    # --- Store in cache ---
+    payload = {
+        "prediction":            prediction,
+        "confidence_interval":   conf_interval,
+        "feature_importance_top5": importance_top5,
+    }
+    _CACHE.set(model_id, model_version, cache_key_input, payload)
+
+    latency_ms = (time.perf_counter() - t0) * 1000
+    INFERENCE_REQUESTS.labels(model_id=model_id, status="success").inc()
+    INFERENCE_LATENCY.labels(model_id=model_id, endpoint=endpoint).observe(latency_ms / 1000)
+
+    return PredictionResponse(
+        model_id=model_id,
         prediction=prediction,
-        confidence_interval=ci,
-        shap_top5=shap_top5,
-        inference_duration_ms=elapsed_ms,
-        warning=warning,
+        confidence_interval=conf_interval,
+        feature_importance_top5=importance_top5,
+        cache_hit=False,
+        latency_ms=round(latency_ms, 2),
     )
 
 
-# ── Per-model endpoints ───────────────────────────────────────────────────────
+# ---------------------------------------------------------------------------
+# Prediction endpoints
+# ---------------------------------------------------------------------------
 
-@app.post(f"/predict/{MODEL_XGB_NOWCAST}", response_model=PredictResponse,
-          summary="XGBoost 24-72h precipitation nowcast")
-async def predict_xgboost_nowcast(
-    request: PredictRequest,
-    authorization: Optional[str] = Header(None),   # JWT pass-through to API-GATEWAY
-):
-    try:
-        return _infer(MODEL_XGB_NOWCAST, request)
-    except Exception as exc:
-        REQUEST_COUNTER.labels(model=MODEL_XGB_NOWCAST, status_code="500").inc()
-        log.exception("[%s] inference error", MODEL_XGB_NOWCAST)
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/predict/precipitation", response_model=PredictionResponse, tags=["Inference"])
+async def predict_precipitation(request: PredictionRequest):
+    """XGBoost 24–72 h precipitation nowcast."""
+    return _run_inference("xgb_precip", "/predict/precipitation", request)
 
 
-@app.post(f"/predict/{MODEL_PROPHET_SEASONAL}", response_model=PredictResponse,
-          summary="Prophet seasonal climate forecast")
-async def predict_prophet_seasonal(
-    request: PredictRequest,
-    authorization: Optional[str] = Header(None),
-):
-    try:
-        return _infer(MODEL_PROPHET_SEASONAL, request)
-    except Exception as exc:
-        REQUEST_COUNTER.labels(model=MODEL_PROPHET_SEASONAL, status_code="500").inc()
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/predict/seasonal", response_model=PredictionResponse, tags=["Inference"])
+async def predict_seasonal(request: PredictionRequest):
+    """Prophet seasonal climate forecast."""
+    return _run_inference("prophet", "/predict/seasonal", request)
 
 
-@app.post(f"/predict/{MODEL_CNN_LAND_COVER}", response_model=PredictResponse,
-          summary="CNN land-cover / cloud-mask classification")
-async def predict_cnn_land_cover(
-    request: PredictRequest,
-    authorization: Optional[str] = Header(None),
-):
-    try:
-        return _infer(MODEL_CNN_LAND_COVER, request)
-    except Exception as exc:
-        REQUEST_COUNTER.labels(model=MODEL_CNN_LAND_COVER, status_code="500").inc()
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/predict/landcover", response_model=PredictionResponse, tags=["Inference"])
+async def predict_landcover(request: PredictionRequest):
+    """CNN land cover classification from satellite imagery."""
+    return _run_inference("cnn_landcover", "/predict/landcover", request)
 
 
-@app.post(f"/predict/{MODEL_LSTM_STREAMFLOW}", response_model=PredictResponse,
-          summary="LSTM streamflow forecast — Ciliwung / Brantas / Solo")
-async def predict_lstm_streamflow(
-    request: PredictRequest,
-    authorization: Optional[str] = Header(None),
-):
-    if not request.station:
-        raise HTTPException(
-            status_code=422,
-            detail="station required for lstm_streamflow. "
-                   "One of: ciliwung_manggarai, brantas_mlirip, solo_jurug",
-        )
-    try:
-        return _infer(MODEL_LSTM_STREAMFLOW, request)
-    except Exception as exc:
-        REQUEST_COUNTER.labels(model=MODEL_LSTM_STREAMFLOW, status_code="500").inc()
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/predict/streamflow", response_model=PredictionResponse, tags=["Inference"])
+async def predict_streamflow(request: PredictionRequest):
+    """LSTM streamflow / flood early warning forecast."""
+    return _run_inference("lstm_stream", "/predict/streamflow", request)
 
 
-@app.post("/predict/{model_name}", response_model=PredictResponse, include_in_schema=False)
-async def predict_generic(
-    model_name: str,
-    request: PredictRequest,
-    authorization: Optional[str] = Header(None),
-):
-    if model_name not in ALL_MODELS:
-        raise HTTPException(status_code=404, detail=f"Unknown model '{model_name}'. Valid: {ALL_MODELS}")
-    try:
-        return _infer(model_name, request)
-    except Exception as exc:
-        REQUEST_COUNTER.labels(model=model_name, status_code="500").inc()
-        raise HTTPException(status_code=500, detail=str(exc))
+@app.post("/predict/climate", response_model=PredictionResponse, tags=["Inference"])
+async def predict_climate(request: PredictionRequest):
+    """TFT multi-variate climate forecast (T2M, RH, wind)."""
+    return _run_inference("tft_climate", "/predict/climate", request)
+
+
+# ---------------------------------------------------------------------------
+# Health
+# ---------------------------------------------------------------------------
+
+@app.get("/healthz", response_model=HealthResponse, tags=["Health"])
+async def healthz():
+    cache_ok   = _CACHE._redis is not None
+    fs_ok      = _FEATURE_STORE._store is not None
+    return HealthResponse(
+        status="ok",
+        models_loaded=_MODELS_LOADED,
+        cache_available=cache_ok,
+        feature_store_available=fs_ok,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Prometheus metrics endpoint (delegated to prometheus_client)
+# ---------------------------------------------------------------------------
+
+@app.get("/metrics", tags=["Observability"], include_in_schema=False)
+async def metrics():
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+# ---------------------------------------------------------------------------
+# Stub model
+# ---------------------------------------------------------------------------
+
+class _ModelStub:
+    """Null-inference stub when a model class is unavailable at load time."""
+    FEATURE_REFS = []
+    version = "stub"
+
+    def __init__(self, model_id: str):
+        self.model_id = model_id
+
+    def predict(self, features, forecast_horizon, issued_date):
+        return {"prediction": None, "confidence_interval": None}
+
+    @classmethod
+    def load_from_registry(cls):
+        return cls("stub")
