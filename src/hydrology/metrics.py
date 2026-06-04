@@ -137,6 +137,47 @@ if _PROM_AVAILABLE:
         registry=_REGISTRY,
     )
 
+    # ---- Sprint 6 metrics ----
+
+    # E1: Streamflow forecast peak discharge per river and horizon
+    STREAMFLOW_FORECAST_PEAK = Gauge(
+        "tropi_streamflow_forecast_peak_cms",
+        "Forecast peak discharge (m³/s) per river and horizon",
+        labelnames=["river_id", "horizon_hr"],
+        registry=_REGISTRY,
+    )
+
+    # E1: Streamflow forecast run counter per river and status
+    STREAMFLOW_FORECAST_RUNS = Counter(
+        "tropi_streamflow_forecast_runs_total",
+        "Total streamflow forecast runs per river and status",
+        labelnames=["river_id", "status"],
+        registry=_REGISTRY,
+    )
+
+    # E3: Drought risk class per DAS watershed (0=NORMAL … 3=EMERGENCY)
+    DROUGHT_RISK_CLASS = Gauge(
+        "tropi_drought_risk_class",
+        "Drought risk class (0=NORMAL, 1=WATCH, 2=WARNING, 3=EMERGENCY) per watershed",
+        labelnames=["watershed_id"],
+        registry=_REGISTRY,
+    )
+
+    # E3: Count of watersheds at WATCH or above
+    DROUGHT_WATERSHEDS_WARNING = Gauge(
+        "tropi_drought_watersheds_warning_total",
+        "Number of DAS watersheds currently at WATCH risk class or above",
+        registry=_REGISTRY,
+    )
+
+    # E5: Flood threshold breach counter per river and stage
+    FLOOD_THRESHOLD_BREACH = Counter(
+        "tropi_flood_threshold_breach_total",
+        "Total flood threshold breach events per river and flood stage",
+        labelnames=["river_id", "flood_stage"],
+        registry=_REGISTRY,
+    )
+
 else:  # pragma: no cover — define stub objects so call sites don't need guards
     class _Stub:  # type: ignore[no-redef]
         def labels(self, **_): return self
@@ -154,6 +195,12 @@ else:  # pragma: no cover — define stub objects so call sites don't need guard
     QPE_VALIDATION_FAILURES  = _Stub()   # type: ignore[assignment]
     ALERT_DELIVERY_TOTAL     = _Stub()   # type: ignore[assignment]
     WATER_BALANCE_CLOSURE_ERR = _Stub()  # type: ignore[assignment]
+    # Sprint 6 stubs
+    STREAMFLOW_FORECAST_PEAK   = _Stub()  # type: ignore[assignment]
+    STREAMFLOW_FORECAST_RUNS   = _Stub()  # type: ignore[assignment]
+    DROUGHT_RISK_CLASS         = _Stub()  # type: ignore[assignment]
+    DROUGHT_WATERSHEDS_WARNING = _Stub()  # type: ignore[assignment]
+    FLOOD_THRESHOLD_BREACH     = _Stub()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
