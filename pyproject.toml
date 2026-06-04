@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "tropi-climate-analytics"
+version = "0.1.0"
+description = "Cloud-based big-data analytics for tropical climate monitoring"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "KOSASIH", email = "kosasihg88@gmail.com" }]
+keywords = ["climate", "analytics", "NASA", "satellite", "Indonesia", "tropical"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Scientific/Engineering :: Atmospheric Science",
+]
+requires-python = ">=3.10"
+
+[project.urls]
+Homepage = "https://github.com/KOSASIH/tropi-climate-analytics"
+Repository = "https://github.com/KOSASIH/tropi-climate-analytics"
+
+[tool.black]
+line-length = 100
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 100
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["src/tests"]
+addopts = "--cov=src --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["src"]
+omit = ["src/tests/*", "*/__init__.py"]
