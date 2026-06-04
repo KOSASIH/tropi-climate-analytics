@@ -211,6 +211,33 @@ if _PROM_AVAILABLE:
         registry=_REGISTRY,
     )
 
+    # ---- Sprint 8 metrics ----
+
+    # J1: QPE pipeline update latency per source
+    QPE_UPDATE_LATENCY = Histogram(
+        "tropi_qpe_update_latency_seconds",
+        "QPE pipeline update latency (seconds) per data source",
+        labelnames=["source"],
+        buckets=(30, 60, 120, 240, 480),
+        registry=_REGISTRY,
+    )
+
+    # J3: Drought risk level per region and classification
+    DROUGHT_RISK_LEVEL = Gauge(
+        "tropi_drought_risk_level",
+        "Drought risk level (0=NORMAL..4=EXTREME_DROUGHT) per region and classification",
+        labelnames=["region_id", "classification"],
+        registry=_REGISTRY,
+    )
+
+    # J5: Streamflow forecast bias (updated after verification)
+    STREAMFLOW_FORECAST_BIAS = Gauge(
+        "tropi_streamflow_forecast_bias_cms",
+        "Streamflow forecast bias (m³/s) per river and horizon (updated after verification)",
+        labelnames=["river_id", "horizon_hr"],
+        registry=_REGISTRY,
+    )
+
 else:  # pragma: no cover — define stub objects so call sites don't need guards
     class _Stub:  # type: ignore[no-redef]
         def labels(self, **_): return self
@@ -239,6 +266,10 @@ else:  # pragma: no cover — define stub objects so call sites don't need guard
     INUNDATION_AREA_KM2        = _Stub()  # type: ignore[assignment]
     GRACE_GWS_ANOMALY          = _Stub()  # type: ignore[assignment]
     AQUIFER_EMERGENCY          = _Stub()  # type: ignore[assignment]
+    # Sprint 8 stubs
+    QPE_UPDATE_LATENCY         = _Stub()  # type: ignore[assignment]
+    DROUGHT_RISK_LEVEL         = _Stub()  # type: ignore[assignment]
+    STREAMFLOW_FORECAST_BIAS   = _Stub()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -385,4 +416,56 @@ def increment_aquifer_emergency(region_id: str) -> None:
     """Increment aquifer emergency counter for a region."""
     AQUIFER_EMERGENCY.labels(region_id=region_id).inc()
     logger.warning("Aquifer EMERGENCY threshold breached | region=%s", region_id)
+    _push_safe()
+
+
+def _make_histogram(name: str, doc: str, labels: list, buckets=None) -> Any:
+    if not _PROM_AVAILABLE:
+        return _Noop()
+    kwargs: dict = {"name": name, "documentation": doc,
+                    "labelnames": labels, "registry": _REGISTRY}
+    if buckets:
+        kwargs["buckets"] = list(buckets)
+    return Histogram(**kwargs)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 8 additions — QPE Pipeline, Drought Monitor, Streamflow Forecast
+# ---------------------------------------------------------------------------
+
+QPE_UPDATE_LATENCY = _make_histogram(
+    "tropi_qpe_update_latency_seconds",
+    "QPE update latency in seconds per data source",
+    ["source"],
+    buckets=(30, 60, 120, 240, 480),
+)
+
+DROUGHT_RISK_LEVEL = _make_gauge(
+    "tropi_drought_risk_level",
+    "Drought risk level (0=NORMAL..4=EXTREME) per region and classification",
+    ["region_id", "classification"],
+)
+
+STREAMFLOW_FORECAST_BIAS = _make_gauge(
+    "tropi_streamflow_forecast_bias_cms",
+    "Streamflow forecast bias in m³/s per river and horizon",
+    ["river_id", "horizon_hr"],
+)
+
+
+def record_qpe_latency(source: str, latency_s: float) -> None:
+    """Observe QPE update latency for a data source (gpm|gauge|merged)."""
+    QPE_UPDATE_LATENCY.labels(source=source).observe(latency_s)
+    _push_safe()
+
+
+def record_drought_risk_level(region_id: str, classification: str, level: int) -> None:
+    """Set drought risk level gauge for a region."""
+    DROUGHT_RISK_LEVEL.labels(region_id=region_id, classification=classification).set(level)
+    _push_safe()
+
+
+def record_streamflow_forecast_bias(river_id: str, horizon_hr: int, bias_cms: float) -> None:
+    """Set streamflow forecast bias for a river and horizon."""
+    STREAMFLOW_FORECAST_BIAS.labels(river_id=river_id, horizon_hr=str(horizon_hr)).set(bias_cms)
     _push_safe()
