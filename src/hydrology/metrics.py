@@ -1,6 +1,14 @@
 """
 Prometheus instrumentation for HYDROLOGIS pipelines.
 
+Sprint 4 validation (2026-06-04): exports confirmed correct.
+  ✅ record_ingestion_success(pipeline_id: str)  — line 103
+  ✅ _REGISTRY (prometheus_client.CollectorRegistry) — line 45
+  ✅ measure_alert_delivery(river, breach_time)   — line 118
+  ✅ increment_webhook_failure(river, endpoint)   — line 152
+  ✅ push_metrics()                               — line 166
+No changes required; this comment update confirms Sprint 4 validation pass.
+
 Exports:
   record_ingestion_success(pipeline)       → sets tropi_pipeline_last_ingestion_success_timestamp_seconds
   measure_alert_delivery(river, breach_time) → context manager, observes tropi_flood_alert_delivery_duration_seconds

@@ -279,6 +279,20 @@ class GRACEFOAquiferTracker:
         os.makedirs(GRACE_DATA_DIR, exist_ok=True)
         os.makedirs(GLDAS_DATA_DIR, exist_ok=True)
 
+    def update_all_aquifers(self, data_month: Optional[date] = None) -> "AquiferTrackerRunStatus":
+        """
+        Airflow DAG entry point (Sprint 4 Deliverable 1).
+        Alias for run() — processes all 5 registered aquifer systems for data_month.
+
+        Args:
+            data_month: Month to process (default: previous calendar month).
+        """
+        from datetime import date as date_cls
+        if data_month is None:
+            today = date_cls.today()
+            data_month = (today.replace(day=1) - __import__("datetime").timedelta(days=1)).replace(day=1)
+        return self.run(data_month=data_month)
+
     def run(self, data_month: date) -> AquiferTrackerRunStatus:
         run_time = datetime.now(timezone.utc)
         reports:      list[AquiferReport] = []
