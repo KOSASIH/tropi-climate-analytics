@@ -238,6 +238,33 @@ if _PROM_AVAILABLE:
         registry=_REGISTRY,
     )
 
+    # ---- Sprint 9 metrics ----
+
+    # K1: Flood alert dispatch counter per river and warning level
+    FLOOD_ALERT_DISPATCH = Counter(
+        "tropi_flood_alert_dispatch_total",
+        "Total flood alert dispatches per river and BNPB/BPBD warning level",
+        labelnames=["river_id", "level"],
+        registry=_REGISTRY,
+    )
+
+    # K3: Seasonal forecast skill score (Pearson r) per watershed and horizon
+    SEASONAL_FORECAST_SKILL = Gauge(
+        "tropi_seasonal_forecast_skill",
+        "Seasonal water forecast Pearson r skill score per watershed and horizon (updated monthly after verification)",
+        labelnames=["watershed_id", "horizon_months"],
+        registry=_REGISTRY,
+    )
+
+    # K5: Watershed model runtime per watershed, model type, and run status
+    WATERSHED_MODEL_RUNTIME = Histogram(
+        "tropi_watershed_model_runtime_seconds",
+        "Hydrological model (SWAT/VIC) run time in seconds per watershed, model type, and status",
+        labelnames=["watershed_id", "model", "status"],
+        buckets=(60, 300, 900, 1800, 3600, 7200),
+        registry=_REGISTRY,
+    )
+
 else:  # pragma: no cover — define stub objects so call sites don't need guards
     class _Stub:  # type: ignore[no-redef]
         def labels(self, **_): return self
@@ -270,6 +297,10 @@ else:  # pragma: no cover — define stub objects so call sites don't need guard
     QPE_UPDATE_LATENCY         = _Stub()  # type: ignore[assignment]
     DROUGHT_RISK_LEVEL         = _Stub()  # type: ignore[assignment]
     STREAMFLOW_FORECAST_BIAS   = _Stub()  # type: ignore[assignment]
+    # Sprint 9 stubs
+    FLOOD_ALERT_DISPATCH       = _Stub()  # type: ignore[assignment]
+    SEASONAL_FORECAST_SKILL    = _Stub()  # type: ignore[assignment]
+    WATERSHED_MODEL_RUNTIME    = _Stub()  # type: ignore[assignment]
 
 
 # ---------------------------------------------------------------------------
@@ -468,4 +499,52 @@ def record_drought_risk_level(region_id: str, classification: str, level: int) -
 def record_streamflow_forecast_bias(river_id: str, horizon_hr: int, bias_cms: float) -> None:
     """Set streamflow forecast bias for a river and horizon."""
     STREAMFLOW_FORECAST_BIAS.labels(river_id=river_id, horizon_hr=str(horizon_hr)).set(bias_cms)
+    _push_safe()
+
+
+# ---------------------------------------------------------------------------
+# Sprint 9 additions — Flood Early Warning, Seasonal Forecast, Watershed Model
+# ---------------------------------------------------------------------------
+
+FLOOD_ALERT_DISPATCH = _make_counter(
+    "tropi_flood_alert_dispatch_total",
+    "Flood alert dispatch events per river and BNPB level",
+    ["river_id", "level"],
+)
+
+SEASONAL_FORECAST_SKILL = _make_gauge(
+    "tropi_seasonal_forecast_skill",
+    "Seasonal forecast skill score (Pearson r or confidence proxy) per watershed and horizon",
+    ["watershed_id", "horizon_months"],
+)
+
+WATERSHED_MODEL_RUNTIME = _make_histogram(
+    "tropi_watershed_model_runtime_seconds",
+    "SWAT/VIC watershed model runtime in seconds per watershed and model",
+    ["watershed_id", "model", "status"],
+    buckets=(60, 300, 900, 1800, 3600, 7200),
+)
+
+
+def record_flood_alert_dispatch(river_id: str, level: str) -> None:
+    """Increment flood alert dispatch counter for a river and warning level."""
+    FLOOD_ALERT_DISPATCH.labels(river_id=river_id, level=level).inc()
+    _push_safe()
+
+
+def record_seasonal_forecast_skill(watershed_id: str, horizon_months: int,
+                                    skill: float) -> None:
+    """Set seasonal forecast skill gauge for a watershed and horizon."""
+    SEASONAL_FORECAST_SKILL.labels(
+        watershed_id=watershed_id, horizon_months=str(horizon_months)
+    ).set(skill)
+    _push_safe()
+
+
+def record_watershed_model_runtime(watershed_id: str, model: str,
+                                    status: str, runtime_s: float) -> None:
+    """Observe SWAT/VIC watershed model runtime histogram."""
+    WATERSHED_MODEL_RUNTIME.labels(
+        watershed_id=watershed_id, model=model, status=status
+    ).observe(runtime_s)
     _push_safe()

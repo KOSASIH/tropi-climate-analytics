@@ -1,17 +1,34 @@
 """
-Airflow DAG — Flood Early Warning (30-minute)
-HYDROLOGIS Sprint 4 | Deliverable 2
+flood_early_warning_dag.py — Sprint 9 K2
+dag_id: hydrologis_flood_early_warning
 
-dag_id:   flood_early_warning_30min
-schedule: */30 * * * * (Asia/Jakarta)
-SLA:      10 minutes
+Schedule: */30 * * * * Asia/Jakarta  (every 30 min — matches QPE cadence)
+SLA: 5 minutes
 
-Task graph:
-  fetch_qpe → fetch_gauge_readings → run_streamflow_forecast → run_flood_inundation → emit_metrics
-                                                                        │
-                                                              EMERGENCY stage detected
-                                                                        ↓
-                                                    TriggerDagRunOperator → emergency_flood_alert_dag
+Integrates QPE latest_qpe.json + streamflow latest_forecast.json for 6 rivers,
+evaluates BNPB/BPBD 4-level flood warnings, writes active_warnings.json sidecar,
+emits FLOOD_ALERT_DISPATCH Prometheus counter, dispatches BPBD webhook alerts
+for ORANGE/RED with 30-minute dedup window.
+
+Rivers: ciliwung, brantas, solo, citarum, musi, bengawan_solo
+
+Tasks:
+    load_qpe_latest           → ShortCircuit if QPE stale > 45 min
+    load_streamflow_latest    → ShortCircuit if forecast stale > 75 min
+    evaluate_all_rivers       (TaskGroup, 6 parallel)
+      ├─ evaluate_ciliwung
+      ├─ evaluate_brantas
+      ├─ evaluate_solo
+      ├─ evaluate_citarum
+      ├─ evaluate_musi
+      └─ evaluate_bengawan_solo
+    write_active_warnings     → active_warnings.json + per-river JSONs
+    emit_warning_metrics      → FLOOD_ALERT_DISPATCH Counter
+    dispatch_alerts           → BPBD webhook for ORANGE/RED (30-min dedup)
+
+Cross-agent handoff:
+    GEOSPATIAL: workspace/output/early_warning/active_warnings.json
+    VISUALIA:   workspace/output/early_warning/active_warnings.json
 """
 
 from __future__ import annotations
@@ -20,292 +37,248 @@ import json
 import logging
 import os
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from airflow import DAG
-from airflow.operators.empty import EmptyOperator
-from airflow.operators.python import BranchPythonOperator, PythonOperator
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.models import Variable
+from airflow.operators.python import PythonOperator, ShortCircuitOperator
+from airflow.utils.dates import days_ago
+from airflow.utils.task_group import TaskGroup
 
 logger = logging.getLogger(__name__)
 
-WORKSPACE = os.getenv("WORKSPACE_ROOT", "workspace")
-
-# River mean_annual_q defaults (fallback when gauge data unavailable)
-RIVER_MEAN_ANNUAL_Q = {
-    "ciliwung": 38.0,
-    "brantas":  230.0,
-    "solo":     310.0,
+_DEFAULT_ARGS = {
+    "owner": "hydrologis",
+    "depends_on_past": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=1),
+    "email_on_failure": False,
 }
 
-default_args = {
-    "owner":             "hydrologis",
-    "depends_on_past":   False,
-    "email_on_failure":  True,
-    "email_on_retry":    False,
-    "retries":           1,
-    "retry_delay":       timedelta(minutes=2),
-    "execution_timeout": timedelta(minutes=10),
-}
-
-# ---------------------------------------------------------------------------
-# Task 1: fetch_qpe
-# ---------------------------------------------------------------------------
-
-def fetch_qpe(**context) -> dict:
-    """
-    Read latest QPE fusion output from workspace/output/qpe/.
-    Returns the most-recently modified QPE JSON, or an empty dict on miss.
-    """
-    import glob
-
-    qpe_dir = os.path.join(WORKSPACE, "output", "qpe")
-    os.makedirs(qpe_dir, exist_ok=True)
-
-    files = sorted(glob.glob(os.path.join(qpe_dir, "*.json")), key=os.path.getmtime, reverse=True)
-    if not files:
-        logger.warning("No QPE output found in %s — using zero precipitation fallback", qpe_dir)
-        return {"precip_mm_6h": 0.0, "source": "fallback", "path": None}
-
-    with open(files[0]) as fh:
-        data = json.load(fh)
-
-    precip = float(data.get("precip_mm_6h", data.get("mean_precip_mm", 0.0)))
-    logger.info("QPE fetched: %.1f mm/6h from %s", precip, files[0])
-    return {"precip_mm_6h": precip, "source": files[0], "path": files[0]}
+_WS            = Path(os.environ.get("HYDRO_WORKSPACE", "/opt/airflow/workspace"))
+_QPE_PATH      = _WS / "output" / "qpe"   / "latest_qpe.json"
+_SF_PATH       = _WS / "output" / "streamflow" / "latest_forecast.json"
+_WARN_DIR      = _WS / "output" / "early_warning"
+_QPE_STALE_S   = 45 * 60   # 45 minutes
+_SF_STALE_S    = 75 * 60   # 75 minutes
+_RIVERS        = ["ciliwung", "brantas", "solo", "citarum", "musi", "bengawan_solo"]
+_ALERT_LEVELS  = {"ORANGE", "RED"}
+_DEDUP_TTL_S   = 30 * 60   # 30-minute alert dedup window
 
 
-# ---------------------------------------------------------------------------
-# Task 2: fetch_gauge_readings
-# ---------------------------------------------------------------------------
+# ── staleness guards ──────────────────────────────────────────────────────────
 
-def fetch_gauge_readings(**context) -> dict:
-    """
-    Fetch upstream gauge readings from BMKG HIMET API.
-
-    Production: POST to BMKG HIMET REST endpoint with bearer token.
-    Sprint 4:
-      - Read from workspace/data/bmkg_gauge_latest.json if exists
-      - Else use mean_annual_q defaults from RIVER_MEAN_ANNUAL_Q
-    """
-    gauge_path = os.path.join(WORKSPACE, "data", "bmkg_gauge_latest.json")
-
-    if os.path.exists(gauge_path):
-        try:
-            with open(gauge_path) as fh:
-                gauges = json.load(fh)
-            logger.info("BMKG gauge data loaded from %s", gauge_path)
-            return {"current_q": gauges, "source": "bmkg_file"}
-        except Exception as exc:
-            logger.warning("BMKG gauge file read failed (%s) — using defaults", exc)
-
-    # Fallback: mean annual discharge per river
-    logger.info("Using mean_annual_q defaults for gauge readings")
-    return {"current_q": RIVER_MEAN_ANNUAL_Q.copy(), "source": "defaults"}
+def _check_file_freshness(path: Path, max_age_s: int) -> bool:
+    if not path.exists():
+        logger.warning("File missing — ShortCircuit: %s", path)
+        return False
+    age = (datetime.now(tz=timezone.utc).timestamp() -
+           path.stat().st_mtime)
+    if age > max_age_s:
+        logger.warning("File stale (%.0fs > %ds) — ShortCircuit: %s", age, max_age_s, path)
+        return False
+    return True
 
 
-# ---------------------------------------------------------------------------
-# Task 3: run_streamflow_forecast
-# ---------------------------------------------------------------------------
-
-def run_streamflow_forecast(**context) -> dict:
-    """
-    Run StreamflowForecastEngine ensemble (LSTM + HBV) for all 3 rivers.
-    Returns summary including rivers in WARNING/EMERGENCY stage.
-    """
-    from src.hydrology.streamflow_forecast import StreamflowForecastEngine
-
-    ti = context["ti"]
-    qpe_data   = ti.xcom_pull(task_ids="fetch_qpe")
-    gauge_data = ti.xcom_pull(task_ids="fetch_gauge_readings")
-
-    precip_mm_6h = qpe_data.get("precip_mm_6h", 0.0)
-    current_q    = gauge_data.get("current_q", RIVER_MEAN_ANNUAL_Q)
-
-    engine = StreamflowForecastEngine()
-    status = engine.run(
-        precip_mm_6h=precip_mm_6h,
-        current_q=current_q,
-    )
-
-    has_emergency = len(status.rivers_in_emergency) > 0
-    logger.info(
-        "Streamflow forecast complete | warning=%s emergency=%s",
-        status.rivers_in_warning,
-        status.rivers_in_emergency,
-    )
-
-    # Build peak discharge map per river (24h horizon)
-    peak_q_map: dict[str, float] = {}
-    for f in status.forecasts:
-        if f.forecast_horizon_hours == 24:
-            peak_q_map[f.river_id] = f.peak_discharge_m3s
-
-    return {
-        "rivers_in_warning":   status.rivers_in_warning,
-        "rivers_in_emergency": status.rivers_in_emergency,
-        "has_emergency":       has_emergency,
-        "peak_q_24h":          peak_q_map,
-        "output_paths":        status.output_paths,
-    }
+def load_qpe_latest(**context) -> bool:
+    ok = _check_file_freshness(_QPE_PATH, _QPE_STALE_S)
+    if ok:
+        data = json.loads(_QPE_PATH.read_text())
+        context["ti"].xcom_push(key="qpe_data", value=data)
+    return ok
 
 
-# ---------------------------------------------------------------------------
-# Task 4: run_flood_inundation
-# ---------------------------------------------------------------------------
-
-def run_flood_inundation(**context) -> dict:
-    """
-    Run FloodInundationMapper for rivers in WARNING or EMERGENCY stage only.
-    In-bank rivers (NORMAL/WATCH) are skipped to reduce compute.
-    """
-    from datetime import date
-
-    from src.hydrology.flood_inundation import FloodInundationMapper
-
-    ti = context["ti"]
-    sf_result = ti.xcom_pull(task_ids="run_streamflow_forecast")
-
-    warning_rivers   = sf_result.get("rivers_in_warning", [])
-    emergency_rivers = sf_result.get("rivers_in_emergency", [])
-    active_rivers    = list(set(warning_rivers + emergency_rivers))
-
-    if not active_rivers:
-        logger.info("No rivers in WARNING/EMERGENCY — skipping flood inundation run")
-        return {"skipped": True, "reason": "no rivers above WARNING threshold"}
-
-    peak_q = sf_result.get("peak_q_24h", {})
-    forecasts = {
-        river_id: {6: peak_q.get(river_id, 0.0) * 0.7,
-                   12: peak_q.get(river_id, 0.0) * 0.9,
-                   24: peak_q.get(river_id, 0.0)}
-        for river_id in active_rivers
-        if river_id in peak_q
-    }
-
-    mapper = FloodInundationMapper()
-    status = mapper.run(forecasts=forecasts, reference_date=date.today())
-
-    logger.info(
-        "Flood inundation mapped | rivers=%s total_km2=%.1f",
-        active_rivers,
-        status.total_inundated_km2,
-    )
-
-    return {
-        "skipped":            False,
-        "rivers_mapped":      active_rivers,
-        "total_inundated_km2": status.total_inundated_km2,
-        "results_count":      len(status.results),
-    }
+def load_streamflow_latest(**context) -> bool:
+    ok = _check_file_freshness(_SF_PATH, _SF_STALE_S)
+    if ok:
+        data = json.loads(_SF_PATH.read_text())
+        context["ti"].xcom_push(key="streamflow_data", value=data)
+    return ok
 
 
-# ---------------------------------------------------------------------------
-# Task 5: emit_metrics
-# ---------------------------------------------------------------------------
+# ── per-river evaluation factory ─────────────────────────────────────────────
 
-def emit_metrics(**context) -> dict:
-    """
-    Confirm tropi_pipeline_last_ingestion_success_timestamp_seconds is updated.
-    Also push final Prometheus batch.
-    """
-    from src.hydrology.metrics import push_metrics, record_ingestion_success
-
-    record_ingestion_success("flood_early_warning_30min")
-    push_metrics()
-
-    ti = context["ti"]
-    sf_result = ti.xcom_pull(task_ids="run_streamflow_forecast")
-
-    logger.info(
-        "Metrics emitted | pipeline=flood_early_warning_30min warning=%s emergency=%s",
-        sf_result.get("rivers_in_warning"),
-        sf_result.get("rivers_in_emergency"),
-    )
-    return {"metrics_pushed": True}
-
-
-# ---------------------------------------------------------------------------
-# Branch: check for EMERGENCY stage
-# ---------------------------------------------------------------------------
-
-def check_emergency_stage(**context) -> str:
-    ti = context["ti"]
-    sf_result = ti.xcom_pull(task_ids="run_streamflow_forecast")
-    if sf_result.get("has_emergency"):
-        logger.critical(
-            "EMERGENCY flood stage detected: %s — triggering emergency_flood_alert_dag",
-            sf_result.get("rivers_in_emergency"),
+def _make_evaluate_callable(river_id: str):
+    def evaluate_river(**context):
+        from src.hydrology.flood_early_warning import FloodEarlyWarningSystem
+        ti = context["ti"]
+        qpe  = ti.xcom_pull(key="qpe_data",         task_ids="load_qpe_latest")
+        sf   = ti.xcom_pull(key="streamflow_data",   task_ids="load_streamflow_latest")
+        ews  = FloodEarlyWarningSystem()
+        result = ews.evaluate(
+            river_id=river_id,
+            issue_time=datetime.now(tz=timezone.utc),
+            qpe_data=qpe,
+            streamflow_data=sf,
         )
-        return "trigger_emergency_alert"
-    return "no_emergency"
+        payload = {
+            "river_id":            result.river_id,
+            "issue_time":          result.issue_time.isoformat(),
+            "level":               result.level,
+            "forecast_cms_6hr":    result.forecast_cms_6hr,
+            "forecast_cms_12hr":   result.forecast_cms_12hr,
+            "forecast_cms_24hr":   result.forecast_cms_24hr,
+            "flood_threshold_cms": result.flood_threshold_cms,
+            "confidence_pct":      result.confidence_pct,
+            "expected_peak_time":  result.expected_peak_time.isoformat()
+                                   if result.expected_peak_time else None,
+            "alerted":             result.alerted,
+        }
+        ti.xcom_push(key=f"warning_{river_id}", value=payload)
+        logger.info("Flood eval | %s level=%s %.0f/%.0f cms",
+                    river_id, result.level,
+                    result.forecast_cms_6hr, result.flood_threshold_cms)
+        return payload
+    evaluate_river.__name__ = f"evaluate_{river_id}"
+    return evaluate_river
 
 
-# ---------------------------------------------------------------------------
-# DAG definition
-# ---------------------------------------------------------------------------
+# ── downstream tasks ──────────────────────────────────────────────────────────
+
+def write_active_warnings(**context) -> dict:
+    ti = context["ti"]
+    warnings = []
+    for river_id in _RIVERS:
+        w = ti.xcom_pull(
+            key=f"warning_{river_id}",
+            task_ids=f"evaluate_all_rivers.evaluate_{river_id}",
+        )
+        if w:
+            warnings.append(w)
+
+    _WARN_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Per-river files
+    for w in warnings:
+        ts = datetime.fromisoformat(w["issue_time"]).strftime("%Y%m%d_%H%M")
+        path = _WARN_DIR / f"warning_{w['river_id']}_{ts}.json"
+        path.write_text(json.dumps(w, indent=2))
+
+    # Rolling sidecar
+    active = [w for w in warnings if w["level"] in ("YELLOW", "ORANGE", "RED")]
+    sidecar = {
+        "generated_at": datetime.now(tz=timezone.utc).isoformat(),
+        "active_warnings": active,
+        "total_rivers_monitored": len(_RIVERS),
+        "rivers_at_risk": len(active),
+        "highest_level": max((w["level"] for w in active),
+                              key=lambda l: ("GREEN","YELLOW","ORANGE","RED").index(l))
+                          if active else "GREEN",
+    }
+    (_WARN_DIR / "active_warnings.json").write_text(json.dumps(sidecar, indent=2))
+    logger.info("active_warnings.json written | rivers_at_risk=%d", len(active))
+    ti.xcom_push(key="warnings", value=warnings)
+    return {"rivers_at_risk": len(active)}
+
+
+def emit_warning_metrics(**context) -> None:
+    ti = context["ti"]
+    warnings = ti.xcom_pull(key="warnings", task_ids="write_active_warnings") or []
+    try:
+        from src.hydrology.metrics import FLOOD_ALERT_DISPATCH
+        for w in warnings:
+            if w["level"] != "GREEN":
+                FLOOD_ALERT_DISPATCH.labels(
+                    river_id=w["river_id"], level=w["level"]
+                ).inc()
+        logger.info("FLOOD_ALERT_DISPATCH metrics emitted for %d rivers", len(warnings))
+    except Exception as exc:
+        logger.warning("Metrics emit non-fatal: %s", exc)
+
+
+def dispatch_alerts(**context) -> dict:
+    """
+    Push BPBD webhook alerts for ORANGE/RED rivers.
+    Dedup: Airflow Variable FLOOD_ALERT_DISPATCHED_{river_id} stores last dispatch
+    timestamp; skip re-dispatch within _DEDUP_TTL_S (30 min).
+    """
+    ti = context["ti"]
+    warnings = ti.xcom_pull(key="warnings", task_ids="write_active_warnings") or []
+    alert_rivers = [w for w in warnings if w["level"] in _ALERT_LEVELS]
+    dispatched = []
+
+    for w in alert_rivers:
+        var_key  = f"FLOOD_ALERT_DISPATCHED_{w['river_id'].upper()}"
+        last_str = Variable.get(var_key, default_var=None)
+        now_ts   = datetime.now(tz=timezone.utc).timestamp()
+
+        if last_str and (now_ts - float(last_str)) < _DEDUP_TTL_S:
+            logger.info("Dedup suppressed | %s last=%.0fs ago",
+                        w["river_id"], now_ts - float(last_str))
+            continue
+
+        try:
+            from src.hydrology.flood_early_warning import FloodEarlyWarningSystem
+            ews = FloodEarlyWarningSystem()
+            ews.push_alert(
+                river_id=w["river_id"],
+                level=w["level"],
+                forecast_cms_6hr=w["forecast_cms_6hr"],
+                forecast_cms_12hr=w["forecast_cms_12hr"],
+                forecast_cms_24hr=w["forecast_cms_24hr"],
+                confidence_pct=w["confidence_pct"],
+                expected_peak_time=w.get("expected_peak_time"),
+            )
+            Variable.set(var_key, str(now_ts))
+            dispatched.append(w["river_id"])
+            logger.warning("BPBD alert dispatched | %s level=%s", w["river_id"], w["level"])
+        except Exception as exc:
+            logger.error("Alert dispatch failed for %s: %s", w["river_id"], exc)
+
+    return {"dispatched": dispatched}
+
+
+# ── DAG definition ────────────────────────────────────────────────────────────
 
 with DAG(
-    dag_id="flood_early_warning_30min",
-    description="30-minute flood early warning pipeline: QPE → gauge → LSTM+HBV forecast → inundation → metrics",
-    schedule="*/30 * * * *",
-    start_date=datetime(2026, 1, 1),
+    dag_id="hydrologis_flood_early_warning",
+    description="Every-30-min flood early warning: 6 rivers, BNPB levels, BPBD alert, "
+                "active_warnings.json sidecar.",
+    schedule_interval="*/30 * * * *",
+    start_date=days_ago(1),
+    default_args=_DEFAULT_ARGS,
     catchup=False,
-    default_args=default_args,
-    tags=["hydrologis", "flood", "streamflow", "realtime"],
-    doc_md="""
-## HYDROLOGIS — Flood Early Warning (30-minute)
-
-**Schedule:** Every 30 minutes (Asia/Jakarta)  
-**SLA:** 10 minutes  
-**Rivers:** Ciliwung (DKI Jakarta) · Brantas (Jawa Timur) · Solo (Jawa Tengah)  
-
-**Pipeline:**  
-`fetch_qpe` → `fetch_gauge_readings` → `run_streamflow_forecast` → `run_flood_inundation` → `emit_metrics`  
-
-**EMERGENCY routing:** Any river hitting EMERGENCY stage triggers `emergency_flood_alert_dag`  
-**Prometheus:** `tropi_pipeline_last_ingestion_success_timestamp_seconds{pipeline=flood_early_warning_30min}`
-    """,
-    dagrun_timeout=timedelta(minutes=10),
+    tags=["hydrologis", "flood", "early_warning", "sprint9"],
+    doc_md=__doc__,
 ) as dag:
 
-    t_qpe = PythonOperator(
-        task_id="fetch_qpe",
-        python_callable=fetch_qpe,
+    t_qpe = ShortCircuitOperator(
+        task_id="load_qpe_latest",
+        python_callable=load_qpe_latest,
+        sla=timedelta(minutes=1),
     )
 
-    t_gauge = PythonOperator(
-        task_id="fetch_gauge_readings",
-        python_callable=fetch_gauge_readings,
+    t_sf = ShortCircuitOperator(
+        task_id="load_streamflow_latest",
+        python_callable=load_streamflow_latest,
+        sla=timedelta(minutes=1),
     )
 
-    t_forecast = PythonOperator(
-        task_id="run_streamflow_forecast",
-        python_callable=run_streamflow_forecast,
-    )
+    with TaskGroup("evaluate_all_rivers",
+                   tooltip="Parallel flood evaluation per river") as tg_eval:
+        for _river in _RIVERS:
+            PythonOperator(
+                task_id=f"evaluate_{_river}",
+                python_callable=_make_evaluate_callable(_river),
+                sla=timedelta(minutes=3),
+            )
 
-    t_inundation = PythonOperator(
-        task_id="run_flood_inundation",
-        python_callable=run_flood_inundation,
+    t_write = PythonOperator(
+        task_id="write_active_warnings",
+        python_callable=write_active_warnings,
+        sla=timedelta(minutes=4),
     )
 
     t_metrics = PythonOperator(
-        task_id="emit_metrics",
-        python_callable=emit_metrics,
+        task_id="emit_warning_metrics",
+        python_callable=emit_warning_metrics,
+        sla=timedelta(minutes=4, seconds=30),
     )
 
-    t_branch = BranchPythonOperator(
-        task_id="check_emergency_stage",
-        python_callable=check_emergency_stage,
+    t_alert = PythonOperator(
+        task_id="dispatch_alerts",
+        python_callable=dispatch_alerts,
+        sla=timedelta(minutes=5),
     )
 
-    t_emergency = TriggerDagRunOperator(
-        task_id="trigger_emergency_alert",
-        trigger_dag_id="emergency_flood_alert_dag",   # stub — see dags/emergency_flood_alert_dag.py
-        conf={"alert_type": "EMERGENCY_FLOOD"},
-        wait_for_completion=False,
-    )
-
-    t_no_emergency = EmptyOperator(task_id="no_emergency")
-
-    # Task dependencies
-    [t_qpe, t_gauge] >> t_forecast >> t_inundation >> t_metrics >> t_branch >> [t_emergency, t_no_emergency]
+    [t_qpe, t_sf] >> tg_eval >> t_write >> t_metrics >> t_alert
