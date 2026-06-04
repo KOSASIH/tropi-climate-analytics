@@ -106,6 +106,54 @@ DATA_QUALITY_FAILURES = Counter(
 # defined locally in inference_cache.py for the same reason.
 
 # ---------------------------------------------------------------------------
+# Sprint 7 — Model Monitoring (L1 / model_monitor.py)
+# tropi_model_drift_score{model_id, feature, drift_type=psi|ks|js} Gauge
+# Set after each daily monitoring DAG run per feature per drift method.
+# ---------------------------------------------------------------------------
+
+MODEL_DRIFT_SCORE = Gauge(
+    "tropi_model_drift_score",
+    "Feature-level drift score from daily model monitoring (PSI, KS p-value, JS divergence)",
+    ["model_id", "feature", "drift_type"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Ensemble Forecaster (L4 / ensemble_forecaster.py)
+# tropi_ensemble_forecast_error{entity_type, horizon_hr} Gauge
+# Updated post-observation with actual ensemble prediction error.
+# ---------------------------------------------------------------------------
+
+ENSEMBLE_FORECAST_ERROR = Gauge(
+    "tropi_ensemble_forecast_error",
+    "Ensemble forecast error (MAE proxy) per entity type and forecast horizon",
+    ["entity_type", "horizon_hr"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Feature Pipeline (L3 / feature_pipeline.py)
+# tropi_feature_importance_update_total{entity_type, method} Counter
+# Incremented each time select_features() completes for a given entity/method.
+# ---------------------------------------------------------------------------
+
+FEATURE_IMPORTANCE_UPDATE = Counter(
+    "tropi_feature_importance_update_total",
+    "Feature selection runs completed per entity type and selection method",
+    ["entity_type", "method"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 7 — Model Card Generator (L5 / model_card_generator.py)
+# tropi_model_card_generated_total{model_id, version} Counter
+# Incremented on every promote_to_production() hook that produces a card.
+# ---------------------------------------------------------------------------
+
+MODEL_CARD_GENERATED = Counter(
+    "tropi_model_card_generated_total",
+    "Model cards auto-generated post MLflow production promotion",
+    ["model_id", "version"],
+)
+
+# ---------------------------------------------------------------------------
 # Namespace declaration (informational)
 # ---------------------------------------------------------------------------
 ANALYTICA_METRIC_NAMESPACE = "tropi"
