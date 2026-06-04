@@ -1,13 +1,12 @@
 # ServiceMonitor: analytica-model-server
-# Configures Prometheus (via kube-prometheus-stack operator) to scrape
-# ANALYTICA FastAPI /metrics endpoint on port 8080.
+# Wires Prometheus operator scrape for ANALYTICA FastAPI /metrics endpoint.
 #
-# Prerequisite: ANALYTICA pods MUST carry these labels:
-#   app: analytica-model-server
-#   app.kubernetes.io/part-of: tropi-climate
-# And the container port named "metrics" (containerPort: 8080).
-# Pod annotations (prometheus.io/scrape=true etc.) are NOT required
-# when a ServiceMonitor is present — the operator bypasses annotation discovery.
+# Matches deployment-analytica.yaml (SHA 84878099):
+#   namespace: analytica
+#   selector: app=analytica-model-server
+#   port name: metrics (containerPort 8080)
+#
+# scrapeInterval: 30s (per CLIMATE-OS spec)
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -25,26 +24,26 @@ spec:
     matchNames:
       - analytica
   endpoints:
-    - port: metrics          # must match Service port name
+    - port: metrics          # matches Service port name and deployment containerPort name
       path: /metrics
-      interval: 15s
+      interval: 30s
       scrapeTimeout: 10s
       honorLabels: true
       relabelings:
-        # Preserve model label from metric labels
+        # Preserve model label from pod labels
         - sourceLabels: [__meta_kubernetes_pod_label_model]
           targetLabel: model
           action: replace
-        # Add namespace for alert routing
+        # Namespace for alert routing
         - sourceLabels: [__meta_kubernetes_namespace]
           targetLabel: namespace
           action: replace
-        # Add pod name for debugging
+        # Pod name for debugging
         - sourceLabels: [__meta_kubernetes_pod_name]
           targetLabel: pod
           action: replace
       metricRelabelings:
-        # Keep only tropi_model_* and http_request_* metrics, drop high-cardinality noise
+        # Keep tropi_model_*, http_requests_total, process and gc metrics
         - sourceLabels: [__name__]
           regex: 'tropi_model_.+|http_requests_total|http_request_duration_seconds.*|process_.*|python_gc_.*'
           action: keep
