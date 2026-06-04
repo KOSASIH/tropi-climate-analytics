@@ -1,0 +1,42 @@
+# Application: analytica
+# ANALYTICA ML platform — GPU training, model serving, MLflow
+# Node affinity: gpu-training nodes | tolerates: dedicated=gpu, nvidia.com/gpu=present
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: analytica
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/managed-by: tropi-climate-apps
+spec:
+  project: tropi-climate
+  source:
+    repoURL: https://github.com/KOSASIH/tropi-climate-analytics
+    targetRevision: main
+    path: k8s/analytica
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: analytica
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff: { duration: 10s, factor: 2, maxDuration: 5m }
+  # Health checks for custom ML resources
+  ignoreDifferences:
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/replicas   # Karpenter/HPA manages replica count
+  revisionHistoryLimit: 5

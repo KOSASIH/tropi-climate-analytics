@@ -1,0 +1,48 @@
+# Application: api-gateway
+# API-GATEWAY — Kong + FastAPI, JWT auth, rate limiting, partner integrations
+# Node affinity: cpu-ingestion | tolerates: dedicated=cpu-ingestion
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: api-gateway
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+    argocd.argoproj.io/managed-by: tropi-climate-apps
+spec:
+  project: tropi-climate
+  source:
+    repoURL: https://github.com/KOSASIH/tropi-climate-analytics
+    targetRevision: main
+    path: k8s/api-gateway
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: api-gateway
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - PruneLast=true
+      - ApplyOutOfSyncOnly=true
+    retry:
+      limit: 5
+      backoff: { duration: 10s, factor: 2, maxDuration: 5m }
+  # Health check override for Kong custom resources
+  ignoreDifferences:
+    - group: configuration.konghq.com
+      kind: KongPlugin
+      jsonPointers:
+        - /metadata/annotations
+  revisionHistoryLimit: 5
+  # Custom health checks for Kong Ingress
+  info:
+    - name: team
+      value: api-gateway
+    - name: slack-alert-channel
+      value: '#platform-alerts'

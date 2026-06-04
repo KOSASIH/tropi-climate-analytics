@@ -1,0 +1,58 @@
+# ArgoCD AppProject — tropi-climate
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: tropi-climate
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+spec:
+  description: Tropi Climate Analytics — all subsystem namespaces
+  sourceRepos:
+    - https://github.com/KOSASIH/tropi-climate-analytics
+    - https://prometheus-community.github.io/helm-charts
+    - https://charts.helm.sh/stable
+    - https://argoproj.github.io/argo-helm
+  destinations:
+    - namespace: analytica
+      server: https://kubernetes.default.svc
+    - namespace: hydrologis
+      server: https://kubernetes.default.svc
+    - namespace: data-flow
+      server: https://kubernetes.default.svc
+    - namespace: api-gateway
+      server: https://kubernetes.default.svc
+    - namespace: monitoring
+      server: https://kubernetes.default.svc
+    - namespace: argocd
+      server: https://kubernetes.default.svc
+    - namespace: karpenter
+      server: https://kubernetes.default.svc
+    - namespace: kube-system
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  namespaceResourceWhitelist:
+    - group: '*'
+      kind: '*'
+  # Orphaned resource monitoring — warn on resources not tracked by any app
+  orphanedResources:
+    warn: true
+    ignore:
+      - group: ""
+        kind: ConfigMap
+        name: kube-root-ca.crt
+  roles:
+    - name: platform-admin
+      description: Full access to tropi-climate project
+      policies:
+        - p, proj:tropi-climate:platform-admin, applications, *, tropi-climate/*, allow
+      groups:
+        - cloud-forge-admins
+    - name: read-only
+      description: Read-only access for audit
+      policies:
+        - p, proj:tropi-climate:read-only, applications, get, tropi-climate/*, allow
+      groups:
+        - platform-observers

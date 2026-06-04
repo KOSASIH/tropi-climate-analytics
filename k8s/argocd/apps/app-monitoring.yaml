@@ -1,0 +1,47 @@
+# Application: monitoring
+# kube-prometheus-stack + ELK — Prometheus, Grafana, Alertmanager, Filebeat
+# Wave 0 — deployed before application subsystems
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: monitoring
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.io
+  annotations:
+    argocd.argoproj.io/sync-wave: "0"
+    argocd.argoproj.io/managed-by: tropi-climate-apps
+spec:
+  project: tropi-climate
+  source:
+    repoURL: https://github.com/KOSASIH/tropi-climate-analytics
+    targetRevision: main
+    path: k8s/monitoring
+    helm:
+      valueFiles:
+        - values.yaml
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+      allowEmpty: false
+    syncOptions:
+      - CreateNamespace=true
+      - PrunePropagationPolicy=foreground
+      - ServerSideApply=true   # Required for kube-prometheus-stack CRDs
+    retry:
+      limit: 3
+      backoff: { duration: 15s, factor: 2, maxDuration: 5m }
+  ignoreDifferences:
+    - group: admissionregistration.k8s.io
+      kind: MutatingWebhookConfiguration
+      jsonPointers:
+        - /webhooks/0/clientConfig/caBundle
+    - group: admissionregistration.k8s.io
+      kind: ValidatingWebhookConfiguration
+      jsonPointers:
+        - /webhooks/0/clientConfig/caBundle
+  revisionHistoryLimit: 3
