@@ -67,14 +67,14 @@ Built with: @NASA @BMKG_RI @KLHK_RI @LAPAN_RI
 → https://tropi-climate-analytics.id
 ```
 
-### Posting Cadence
+### Posting Cadence (to be set up as recurring tasks)
 | Content Type | Frequency | Example |
 |---|---|---|
-| Climate alert posts | Event-driven (automated) | "🔴 Deforestation alert: 847ha detected in Kaltim" |
-| Weekly monitoring summary | Every Monday | "📊 Indonesia Climate Week recap" |
-| Dry season updates | Daily Jun–Oct | "🔥 Peat fire hotspot count: XX active (VIIRS)" |
-| Partner spotlight | Monthly | Rotating: BMKG / KLHK / LAPAN |
-| Platform updates | On release | New features, API updates |
+| Climate alert posts | Event-driven (automated) | "🔴 Deforestation alert: 847ha detected in Kaltim — Landsat-9 imagery [link]" |
+| Weekly monitoring summary | Every Monday | "📊 Indonesia Climate Week [n]: Deforestation, AQI, rainfall recap" |
+| Dry season updates | Daily Jun–Oct | "🔥 Peat fire hotspot count: XX active (VIIRS). Highest: [province]." |
+| Partner spotlight | Monthly | Rotating: BMKG / KLHK / LAPAN partnership highlights |
+| Platform updates | On release | New features, API updates, data product launches |
 | Research highlights | Bi-monthly | Papers, datasets, Jupyter notebooks |
 
 ---
@@ -85,21 +85,31 @@ Built with: @NASA @BMKG_RI @KLHK_RI @LAPAN_RI
 
 **Company Name:** Tropi Climate Analytics
 
-**Tagline** *(120 chars max)*:
+**Tagline** *(120 chars max — current: 93)*:
 ```
 Indonesia's integrated satellite & ground climate intelligence platform — open data, real-time.
 ```
 
 **Industry:** Environmental Services / Climate Tech
-**Company Size:** 2–10 employees
+
+**Company Size:** 2–10 employees (startup / research platform)
+
+**Company Type:** Privately Held / Research Institution
+
 **Website:** https://tropi-climate-analytics.id
+
 **Headquarters:** Jakarta, Indonesia
+
 **Founded:** 2026
 
 **Specialties:**
 `Climate Analytics` · `Remote Sensing` · `Deforestation Monitoring` · `Air Quality` · `Flood Early Warning` · `NASA Satellite Data` · `Indonesian Climate` · `Open Data` · `Big Data` · `Climate Intelligence`
 
-### About Section
+---
+
+### About Section (Company Description)
+*(2,000 character limit — current: 1,247)*
+
 ```
 Tropi Climate Analytics is Indonesia's integrated climate intelligence platform — the first to fuse NASA Earth observation satellite data with national ground observation networks from BMKG, KLHK, and LAPAN into a unified, open-access analytics infrastructure.
 
@@ -115,39 +125,78 @@ The platform delivers real-time monitoring across five domains:
 
 🌡️ SEA SURFACE TEMPERATURE — Full EEZ coverage for marine heatwave detection and fisheries support.
 
-All platform outputs are published under CC-BY 4.0. Data stored on AWS ap-southeast-3 (Jakarta) per PP No. 71/2019.
+All platform outputs are published under CC-BY 4.0. Data is stored exclusively on AWS ap-southeast-3 (Jakarta) in compliance with PP No. 71/2019 on Indonesian data residency.
 
 Institutional partners: BMKG · KLHK · LAPAN/BRIN · NASA
 
-→ https://tropi-climate-analytics.id
-→ https://docs.tropi-climate-analytics.id
-→ github.com/KOSASIH/tropi-climate-analytics
+→ Platform: https://tropi-climate-analytics.id
+→ API: https://docs.tropi-climate-analytics.id
+→ GitHub: github.com/KOSASIH/tropi-climate-analytics
 ```
-
-### Logo Specs
-- **Dimensions:** 300 × 300 px PNG
-- **Design brief:** Tropi wordmark on dark teal (#0D4F5C). Legible at 60px thumbnail.
-
-### Banner Specs
-- **Dimensions:** 1128 × 191 px PNG or JPG, < 8MB
-- **Design brief:** Satellite composite of Indonesian archipelago + dark overlay (#0D1B2A 60%) + centered text: "Tropi Climate Analytics" / "Indonesia's Climate Intelligence Platform" / "🛰️ NASA · BMKG · KLHK · LAPAN · Open Data CC-BY 4.0"
-
-### Featured Posts (pin these first)
-1. Platform launch post → press release + platform URL
-2. API documentation → docs.tropi-climate-analytics.id
-3. Partnership announcement → BMKG, KLHK, LAPAN
 
 ---
 
-## SHARED BRAND VOICE
+### Logo (Profile Image) Specs
+- **Dimensions:** 300 × 300 px (displayed as square with rounded corners)
+- **Format:** PNG
+- **Design brief:** Same as Twitter — Tropi wordmark or "T" monogram on dark teal (#0D4F5C). Legible at 60px thumbnail size.
 
-**Tone:** Authoritative but accessible. Data-first. Indonesian-first. Not alarmist.
+### Cover / Banner Image Specs
+- **Dimensions:** 1128 × 191 px (LinkedIn company page banner)
+- **Format:** PNG or JPG, < 8MB
+- **Design brief:**
+  - **Full-width:** Satellite composite of Indonesian archipelago (MODIS true color or NDVI false color). Subtle dark overlay (#0D1B2A, 60% opacity) across full width.
+  - **Centered text block:**
+    - Line 1 (large, white bold): `Tropi Climate Analytics`
+    - Line 2 (medium, teal #1DBFCF): `Indonesia's Climate Intelligence Platform`
+    - Line 3 (small, white): `🛰️ NASA · BMKG · KLHK · LAPAN · Open Data CC-BY 4.0`
+  - **Bottom-right corner:** Tropi logo mark (small, white)
+  - **Color palette:** Same as Twitter banner
 
-**Hashtags:** `#TropiClimate` `#IndonesiaClimate` `#Deforestation` `#AirQuality` `#FloodWarning` `#NASAData` `#RemoteSensing` `#ClimateAnalytics` `#OpenData` `#Karhutla` `#Banjir`
+---
+
+### Featured Section (First 3 posts to pin)
+1. **Platform launch post** — Link to press release + platform URL
+2. **API documentation** — "Researchers: access 20+ years of Indonesian climate data via our API" → docs.tropi-climate-analytics.id
+3. **Partnership announcement** — "Proud to partner with BMKG, KLHK, and LAPAN" with partner logos
+
+### Content Strategy (LinkedIn — more formal than Twitter)
+| Content Type | Frequency | Tone |
+|---|---|---|
+| Platform milestone updates | Monthly | Professional, data-driven |
+| Research & publication announcements | On publication | Academic, cite co-authors |
+| Agency partnership spotlights | Quarterly | Formal, co-tagged with agency pages |
+| Job / collaboration opportunities | As available | Professional |
+| Quarterly climate bulletin | Quarterly | Infographic + newsletter excerpt |
+| ENSO / seasonal outlook threads | Seasonal | Expert, accessible |
+
+---
+
+## SHARED BRAND VOICE GUIDELINES
+
+### Tone
+- **Authoritative but accessible** — Expert-level science communicated for educated non-specialists
+- **Data-first** — Always anchor posts to specific numbers, products, or findings
+- **Indonesian-first** — Lead with Indonesian context; English sub-text where needed
+- **Not alarmist** — Present risk data factually without sensationalism
+
+### Hashtags (standard set)
+`#TropiClimate` `#IndonesiaClimate` `#Deforestation` `#AirQuality` `#FloodWarning` `#NASAData` `#RemoteSensing` `#ClimateAnalytics` `#OpenData` `#Karhutla` `#Banjir`
+
+### Do / Don't
+| Do | Don't |
+|---|---|
+| Tag @NASA, @BMKG_RI, @KLHK_RI, @LAPAN when posting with their data | Overpost — quality > frequency |
+| Include map visuals or charts with every monitoring post | Post without a data source citation |
+| Use bilingual captions for high-reach posts (ID + EN) | Make predictions not backed by platform data |
+| Link to platform or API docs in every technical post | Use alarmist language about climate events |
+```
 
 ---
 
 ## ASSET REQUEST FOR TERRA-VISION / VISUALIA
+
+The following graphical assets are required to activate these social profiles:
 
 | Asset | Dimensions | Platform | Priority |
 |---|---|---|---|
@@ -159,4 +208,4 @@ Institutional partners: BMKG · KLHK · LAPAN/BRIN · NASA
 | Weekly monitoring card template | 1200×675 px PNG | Both | MEDIUM |
 | Quarterly bulletin cover | A4 PDF + 1200×1600 px PNG | LinkedIn | MEDIUM |
 
-*Design brief: Dark navy (#0D1B2A) + teal (#1DBFCF) + white (#FFFFFF). Satellite imagery as background. Tropi wordmark prominent. NASA/BMKG/KLHK/LAPAN co-branding in footer.*
+*Design brief: Dark navy (#0D1B2A) + teal (#1DBFCF) + white (#FFFFFF) palette. Satellite imagery as background where appropriate. Tropi wordmark prominent. NASA/BMKG/KLHK/LAPAN co-branding in footer.*
