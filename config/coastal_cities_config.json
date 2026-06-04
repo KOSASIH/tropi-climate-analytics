@@ -1,0 +1,67 @@
+{
+  "jakarta": {
+    "name": "Jakarta",
+    "province": "DKI Jakarta",
+    "lat": -6.200, "lon": 106.816,
+    "land_subsidence_mm_yr": 15,
+    "rivers": ["ciliwung", "banjir_kanal_barat", "banjir_kanal_timur"],
+    "manning_n": {"ciliwung": 0.045, "banjir_kanal_barat": 0.038, "banjir_kanal_timur": 0.038},
+    "estuary_type": "tidal_flat",
+    "tidal_efficiency": 0.65,
+    "tidal_prism_m3": 4200000,
+    "sea_level_gauge": "tanjung_priok",
+    "groundwater_wells_count": 12500
+  },
+  "semarang": {
+    "name": "Semarang",
+    "province": "Central Java",
+    "lat": -6.967, "lon": 110.420,
+    "land_subsidence_mm_yr": 25,
+    "rivers": ["kali_semarang", "kali_garang"],
+    "manning_n": {"kali_semarang": 0.040, "kali_garang": 0.042},
+    "estuary_type": "micro_tidal",
+    "tidal_efficiency": 0.55,
+    "tidal_prism_m3": 1800000,
+    "sea_level_gauge": "semarang_bmg",
+    "groundwater_wells_count": 8200
+  },
+  "surabaya": {
+    "name": "Surabaya",
+    "province": "East Java",
+    "lat": -7.257, "lon": 112.752,
+    "land_subsidence_mm_yr": 8,
+    "rivers": ["kali_mas", "kali_surabaya"],
+    "manning_n": {"kali_mas": 0.042, "kali_surabaya": 0.040},
+    "estuary_type": "estuarine",
+    "tidal_efficiency": 0.70,
+    "tidal_prism_m3": 3100000,
+    "sea_level_gauge": "tanjung_perak",
+    "groundwater_wells_count": 9800
+  },
+  "demak": {
+    "name": "Demak",
+    "province": "Central Java",
+    "lat": -6.893, "lon": 110.638,
+    "land_subsidence_mm_yr": 30,
+    "rivers": ["kali_tuntang", "kali_serang"],
+    "manning_n": {"kali_tuntang": 0.041, "kali_serang": 0.043},
+    "estuary_type": "tidal_flat",
+    "tidal_efficiency": 0.60,
+    "tidal_prism_m3": 950000,
+    "sea_level_gauge": "demak_tidal",
+    "groundwater_wells_count": 3400
+  },
+  "pekalongan": {
+    "name": "Pekalongan",
+    "province": "Central Java",
+    "lat": -6.889, "lon": 109.674,
+    "land_subsidence_mm_yr": 20,
+    "rivers": ["kali_pekalongan", "kali_sragi"],
+    "manning_n": {"kali_pekalongan": 0.041, "kali_sragi": 0.040},
+    "estuary_type": "micro_tidal",
+    "tidal_efficiency": 0.50,
+    "tidal_prism_m3": 720000,
+    "sea_level_gauge": "pekalongan_bmg",
+    "groundwater_wells_count": 4100
+  }
+}

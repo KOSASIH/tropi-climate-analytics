@@ -1,0 +1,22 @@
+{
+  "danau_toba":       {"name":"Danau Toba",       "lat":-2.683,"lon":98.864,"area_km2":1130.0,"type":"lake",     "province":"North Sumatra",     "mean_depth_m":529,"volume_km3":240.0},
+  "danau_singkarak":  {"name":"Danau Singkarak",  "lat":-0.654,"lon":100.456,"area_km2":107.0,"type":"lake",    "province":"West Sumatra",      "mean_depth_m":268,"volume_km3":2.0},
+  "danau_maninjau":   {"name":"Danau Maninjau",   "lat":-0.320,"lon":100.166,"area_km2":99.5,"type":"lake",     "province":"West Sumatra",      "mean_depth_m":105,"volume_km3":8.0},
+  "danau_towuti":     {"name":"Danau Towuti",      "lat":-2.750,"lon":121.500,"area_km2":561.0,"type":"lake",   "province":"South Sulawesi",    "mean_depth_m":203,"volume_km3":41.0},
+  "danau_matano":     {"name":"Danau Matano",      "lat":-2.530,"lon":121.310,"area_km2":164.0,"type":"lake",   "province":"South Sulawesi",    "mean_depth_m":590,"volume_km3":35.0},
+  "danau_poso":       {"name":"Danau Poso",        "lat":-1.913,"lon":120.593,"area_km2":323.0,"type":"lake",   "province":"Central Sulawesi",  "mean_depth_m":450,"volume_km3":31.0},
+  "danau_ranau":      {"name":"Danau Ranau",       "lat":-4.843,"lon":103.920,"area_km2":125.9,"type":"lake",   "province":"South Sumatra",     "mean_depth_m":229,"volume_km3":9.5},
+  "rawa_pening":      {"name":"Rawa Pening",       "lat":-7.249,"lon":110.450,"area_km2":2.7, "type":"lake",    "province":"Central Java",      "mean_depth_m":4,  "volume_km3":0.065},
+  "danau_batur":      {"name":"Danau Batur",       "lat":-8.240,"lon":115.383,"area_km2":15.9,"type":"lake",    "province":"Bali",              "mean_depth_m":65, "volume_km3":0.82},
+  "danau_bratan":     {"name":"Danau Bratan",      "lat":-8.275,"lon":115.167,"area_km2":3.8, "type":"lake",    "province":"Bali",              "mean_depth_m":22, "volume_km3":0.064},
+  "jatiluhur":        {"name":"Jatiluhur",         "lat":-6.543,"lon":107.380,"area_km2":83.0,"type":"reservoir","province":"West Java",        "mean_depth_m":36, "volume_km3":3.0},
+  "saguling":         {"name":"Saguling",          "lat":-6.944,"lon":107.346,"area_km2":56.0,"type":"reservoir","province":"West Java",        "mean_depth_m":15, "volume_km3":0.875},
+  "cirata":           {"name":"Cirata",            "lat":-6.818,"lon":107.471,"area_km2":62.0,"type":"reservoir","province":"West Java",        "mean_depth_m":35, "volume_km3":2.165},
+  "gajah_mungkur":    {"name":"Gajah Mungkur",     "lat":-7.900,"lon":110.907,"area_km2":90.0,"type":"reservoir","province":"Central Java",     "mean_depth_m":8,  "volume_km3":0.730},
+  "upper_cisokan":    {"name":"Upper Cisokan",     "lat":-6.950,"lon":107.150,"area_km2":11.0,"type":"reservoir","province":"West Java",        "mean_depth_m":62, "volume_km3":0.690},
+  "sempor":           {"name":"Sempor",            "lat":-7.700,"lon":109.525,"area_km2":1.9, "type":"reservoir","province":"Central Java",     "mean_depth_m":30, "volume_km3":0.055},
+  "mrica":            {"name":"Mrica (Banjarsari)","lat":-7.466,"lon":109.516,"area_km2":9.5, "type":"reservoir","province":"Central Java",     "mean_depth_m":25, "volume_km3":0.165},
+  "wonogiri":         {"name":"Wonogiri",          "lat":-7.896,"lon":110.913,"area_km2":90.0,"type":"reservoir","province":"Central Java",     "mean_depth_m":8,  "volume_km3":0.730},
+  "kedungombo":       {"name":"Kedungombo",        "lat":-7.380,"lon":110.841,"area_km2":46.0,"type":"reservoir","province":"Central Java",     "mean_depth_m":18, "volume_km3":0.723},
+  "ir_sutami":        {"name":"Ir. Sutami (Karangkates)","lat":-8.128,"lon":112.529,"area_km2":40.0,"type":"reservoir","province":"East Java", "mean_depth_m":28, "volume_km3":0.343}
+}

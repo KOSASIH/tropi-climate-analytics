@@ -1,0 +1,902 @@
+{
+  "jabar_bandung": {
+    "name": "Bandung",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 275,
+    "area_ha": 15537,
+    "irrigation_type": "surface"
+  },
+  "jabar_bogor": {
+    "name": "Bogor",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 280,
+    "area_ha": 8642,
+    "irrigation_type": "rainfed"
+  },
+  "jabar_karawang": {
+    "name": "Karawang",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 270,
+    "area_ha": 18257,
+    "irrigation_type": "surface"
+  },
+  "jabar_subang": {
+    "name": "Subang",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 272,
+    "area_ha": 9594,
+    "irrigation_type": "rainfed"
+  },
+  "jabar_purwakarta": {
+    "name": "Purwakarta",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 278,
+    "area_ha": 8743,
+    "irrigation_type": "rainfed"
+  },
+  "jabar_cianjur": {
+    "name": "Cianjur",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 285,
+    "area_ha": 18189,
+    "irrigation_type": "surface"
+  },
+  "jabar_sukabumi": {
+    "name": "Sukabumi",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 283,
+    "area_ha": 11793,
+    "irrigation_type": "rainfed"
+  },
+  "jabar_cirebon": {
+    "name": "Cirebon",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 268,
+    "area_ha": 17188,
+    "irrigation_type": "surface"
+  },
+  "jabar_garut": {
+    "name": "Garut",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 290,
+    "area_ha": 18854,
+    "irrigation_type": "rainfed"
+  },
+  "jabar_tasikmalaya": {
+    "name": "Tasikmalaya",
+    "province": "West Java",
+    "watershed_id": "citarum",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 288,
+    "area_ha": 8430,
+    "irrigation_type": "rainfed"
+  },
+  "jateng_banyumas": {
+    "name": "Banyumas",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 278,
+    "area_ha": 13340,
+    "irrigation_type": "surface"
+  },
+  "jateng_cilacap": {
+    "name": "Cilacap",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 275,
+    "area_ha": 17441,
+    "irrigation_type": "rainfed"
+  },
+  "jateng_kebumen": {
+    "name": "Kebumen",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 280,
+    "area_ha": 18107,
+    "irrigation_type": "surface"
+  },
+  "jateng_purworejo": {
+    "name": "Purworejo",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 282,
+    "area_ha": 12951,
+    "irrigation_type": "rainfed"
+  },
+  "jateng_temanggung": {
+    "name": "Temanggung",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 290,
+    "area_ha": 13433,
+    "irrigation_type": "rainfed"
+  },
+  "jateng_magelang": {
+    "name": "Magelang",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 288,
+    "area_ha": 16789,
+    "irrigation_type": "surface"
+  },
+  "jateng_klaten": {
+    "name": "Klaten",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 272,
+    "area_ha": 12672,
+    "irrigation_type": "rainfed"
+  },
+  "jateng_sukoharjo": {
+    "name": "Sukoharjo",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 270,
+    "area_ha": 16160,
+    "irrigation_type": "surface"
+  },
+  "jateng_sragen": {
+    "name": "Sragen",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 268,
+    "area_ha": 9757,
+    "irrigation_type": "rainfed"
+  },
+  "jateng_grobogan": {
+    "name": "Grobogan",
+    "province": "Central Java",
+    "watershed_id": "solo",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 265,
+    "area_ha": 11749,
+    "irrigation_type": "rainfed"
+  },
+  "jatim_malang": {
+    "name": "Malang",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 282,
+    "area_ha": 11062,
+    "irrigation_type": "surface"
+  },
+  "jatim_kediri": {
+    "name": "Kediri",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 275,
+    "area_ha": 16367,
+    "irrigation_type": "rainfed"
+  },
+  "jatim_blitar": {
+    "name": "Blitar",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 278,
+    "area_ha": 18099,
+    "irrigation_type": "surface"
+  },
+  "jatim_tulungagung": {
+    "name": "Tulungagung",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 280,
+    "area_ha": 10422,
+    "irrigation_type": "rainfed"
+  },
+  "jatim_nganjuk": {
+    "name": "Nganjuk",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 268,
+    "area_ha": 17070,
+    "irrigation_type": "rainfed"
+  },
+  "jatim_jombang": {
+    "name": "Jombang",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 270,
+    "area_ha": 10441,
+    "irrigation_type": "surface"
+  },
+  "jatim_lamongan": {
+    "name": "Lamongan",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 262,
+    "area_ha": 13934,
+    "irrigation_type": "rainfed"
+  },
+  "jatim_bojonegoro": {
+    "name": "Bojonegoro",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 258,
+    "area_ha": 15782,
+    "irrigation_type": "surface"
+  },
+  "jatim_ngawi": {
+    "name": "Ngawi",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 265,
+    "area_ha": 10942,
+    "irrigation_type": "rainfed"
+  },
+  "jatim_madiun": {
+    "name": "Madiun",
+    "province": "East Java",
+    "watershed_id": "brantas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 272,
+    "area_ha": 18816,
+    "irrigation_type": "rainfed"
+  },
+  "sumbar_agam": {
+    "name": "Agam",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 300,
+    "area_ha": 16770,
+    "irrigation_type": "surface"
+  },
+  "sumbar_limapuluh_kota": {
+    "name": "Limapuluh Kota",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 298,
+    "area_ha": 15634,
+    "irrigation_type": "rainfed"
+  },
+  "sumbar_tanah_datar": {
+    "name": "Tanah Datar",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 302,
+    "area_ha": 9949,
+    "irrigation_type": "surface"
+  },
+  "sumbar_pasaman": {
+    "name": "Pasaman",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 305,
+    "area_ha": 10596,
+    "irrigation_type": "rainfed"
+  },
+  "sumbar_sijunjung": {
+    "name": "Sijunjung",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 295,
+    "area_ha": 11648,
+    "irrigation_type": "rainfed"
+  },
+  "sumbar_dharmasraya": {
+    "name": "Dharmasraya",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 293,
+    "area_ha": 10402,
+    "irrigation_type": "surface"
+  },
+  "sumbar_solok": {
+    "name": "Solok",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 308,
+    "area_ha": 19471,
+    "irrigation_type": "rainfed"
+  },
+  "sumbar_pesisir_selatan": {
+    "name": "Pesisir Selatan",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 310,
+    "area_ha": 15181,
+    "irrigation_type": "surface"
+  },
+  "sumbar_padang_pariaman": {
+    "name": "Padang Pariaman",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 303,
+    "area_ha": 9314,
+    "irrigation_type": "rainfed"
+  },
+  "sumbar_kep_mentawai": {
+    "name": "Kep Mentawai",
+    "province": "West Sumatra",
+    "watershed_id": "musi",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 315,
+    "area_ha": 18016,
+    "irrigation_type": "rainfed"
+  },
+  "sulsel_gowa": {
+    "name": "Gowa",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 280,
+    "area_ha": 9318,
+    "irrigation_type": "surface"
+  },
+  "sulsel_maros": {
+    "name": "Maros",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 278,
+    "area_ha": 15534,
+    "irrigation_type": "rainfed"
+  },
+  "sulsel_pangkep": {
+    "name": "Pangkep",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 275,
+    "area_ha": 13410,
+    "irrigation_type": "surface"
+  },
+  "sulsel_bone": {
+    "name": "Bone",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 268,
+    "area_ha": 8376,
+    "irrigation_type": "rainfed"
+  },
+  "sulsel_soppeng": {
+    "name": "Soppeng",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 272,
+    "area_ha": 9013,
+    "irrigation_type": "rainfed"
+  },
+  "sulsel_wajo": {
+    "name": "Wajo",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 265,
+    "area_ha": 15438,
+    "irrigation_type": "surface"
+  },
+  "sulsel_sidrap": {
+    "name": "Sidrap",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 270,
+    "area_ha": 9409,
+    "irrigation_type": "rainfed"
+  },
+  "sulsel_pinrang": {
+    "name": "Pinrang",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 262,
+    "area_ha": 19286,
+    "irrigation_type": "surface"
+  },
+  "sulsel_enrekang": {
+    "name": "Enrekang",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 285,
+    "area_ha": 19034,
+    "irrigation_type": "rainfed"
+  },
+  "sulsel_luwu": {
+    "name": "Luwu",
+    "province": "South Sulawesi",
+    "watershed_id": "solo",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 290,
+    "area_ha": 11964,
+    "irrigation_type": "rainfed"
+  },
+  "kalbar_pontianak": {
+    "name": "Pontianak",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 288,
+    "area_ha": 15320,
+    "irrigation_type": "surface"
+  },
+  "kalbar_kubu_raya": {
+    "name": "Kubu Raya",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 285,
+    "area_ha": 19592,
+    "irrigation_type": "rainfed"
+  },
+  "kalbar_mempawah": {
+    "name": "Mempawah",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 283,
+    "area_ha": 10803,
+    "irrigation_type": "surface"
+  },
+  "kalbar_sanggau": {
+    "name": "Sanggau",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 292,
+    "area_ha": 19391,
+    "irrigation_type": "rainfed"
+  },
+  "kalbar_ketapang": {
+    "name": "Ketapang",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 295,
+    "area_ha": 11572,
+    "irrigation_type": "rainfed"
+  },
+  "kalbar_sintang": {
+    "name": "Sintang",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 300,
+    "area_ha": 18038,
+    "irrigation_type": "surface"
+  },
+  "kalbar_kapuas_hulu": {
+    "name": "Kapuas Hulu",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 305,
+    "area_ha": 10935,
+    "irrigation_type": "rainfed"
+  },
+  "kalbar_melawi": {
+    "name": "Melawi",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 302,
+    "area_ha": 19557,
+    "irrigation_type": "surface"
+  },
+  "kalbar_sekadau": {
+    "name": "Sekadau",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 298,
+    "area_ha": 19178,
+    "irrigation_type": "rainfed"
+  },
+  "kalbar_landak": {
+    "name": "Landak",
+    "province": "West Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 290,
+    "area_ha": 9760,
+    "irrigation_type": "rainfed"
+  },
+  "kalsel_banjar": {
+    "name": "Banjar",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 280,
+    "area_ha": 13967,
+    "irrigation_type": "surface"
+  },
+  "kalsel_tapin": {
+    "name": "Tapin",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 278,
+    "area_ha": 8205,
+    "irrigation_type": "rainfed"
+  },
+  "kalsel_hulu_sungai_selatan": {
+    "name": "Hulu Sungai Selatan",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 282,
+    "area_ha": 18794,
+    "irrigation_type": "surface"
+  },
+  "kalsel_hulu_sungai_utara": {
+    "name": "Hulu Sungai Utara",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 285,
+    "area_ha": 13721,
+    "irrigation_type": "rainfed"
+  },
+  "kalsel_balangan": {
+    "name": "Balangan",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 290,
+    "area_ha": 18907,
+    "irrigation_type": "rainfed"
+  },
+  "kalsel_tabalong": {
+    "name": "Tabalong",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 288,
+    "area_ha": 16459,
+    "irrigation_type": "surface"
+  },
+  "kalsel_tanah_laut": {
+    "name": "Tanah Laut",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 272,
+    "area_ha": 19185,
+    "irrigation_type": "rainfed"
+  },
+  "kalsel_kotabaru": {
+    "name": "Kotabaru",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 268,
+    "area_ha": 15521,
+    "irrigation_type": "surface"
+  },
+  "kalsel_tanah_bumbu": {
+    "name": "Tanah Bumbu",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 265,
+    "area_ha": 19635,
+    "irrigation_type": "rainfed"
+  },
+  "kalsel_barito_kuala": {
+    "name": "Barito Kuala",
+    "province": "South Kalimantan",
+    "watershed_id": "kapuas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 275,
+    "area_ha": 13908,
+    "irrigation_type": "rainfed"
+  },
+  "yogya_sleman": {
+    "name": "Sleman",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 275,
+    "area_ha": 8977,
+    "irrigation_type": "surface"
+  },
+  "yogya_bantul": {
+    "name": "Bantul",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 272,
+    "area_ha": 18549,
+    "irrigation_type": "rainfed"
+  },
+  "yogya_kulon_progo": {
+    "name": "Kulon Progo",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 278,
+    "area_ha": 12805,
+    "irrigation_type": "surface"
+  },
+  "yogya_gunung_kidul": {
+    "name": "Gunung Kidul",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 283,
+    "area_ha": 8204,
+    "irrigation_type": "rainfed"
+  },
+  "yogya_wonosari": {
+    "name": "Wonosari",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 280,
+    "area_ha": 11240,
+    "irrigation_type": "rainfed"
+  },
+  "yogya_nglipar": {
+    "name": "Nglipar",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 285,
+    "area_ha": 13396,
+    "irrigation_type": "surface"
+  },
+  "yogya_panggang": {
+    "name": "Panggang",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 288,
+    "area_ha": 18896,
+    "irrigation_type": "rainfed"
+  },
+  "yogya_tepus": {
+    "name": "Tepus",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 290,
+    "area_ha": 18735,
+    "irrigation_type": "surface"
+  },
+  "yogya_semanu": {
+    "name": "Semanu",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 282,
+    "area_ha": 18713,
+    "irrigation_type": "rainfed"
+  },
+  "yogya_gedangsari": {
+    "name": "Gedangsari",
+    "province": "Yogyakarta",
+    "watershed_id": "solo",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 285,
+    "area_ha": 16766,
+    "irrigation_type": "rainfed"
+  },
+  "bali_tabanan": {
+    "name": "Tabanan",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 278,
+    "area_ha": 14654,
+    "irrigation_type": "surface"
+  },
+  "bali_gianyar": {
+    "name": "Gianyar",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 275,
+    "area_ha": 19202,
+    "irrigation_type": "rainfed"
+  },
+  "bali_badung": {
+    "name": "Badung",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 272,
+    "area_ha": 19089,
+    "irrigation_type": "surface"
+  },
+  "bali_buleleng": {
+    "name": "Buleleng",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 280,
+    "area_ha": 16732,
+    "irrigation_type": "rainfed"
+  },
+  "bali_jembrana": {
+    "name": "Jembrana",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 283,
+    "area_ha": 17042,
+    "irrigation_type": "rainfed"
+  },
+  "bali_bangli": {
+    "name": "Bangli",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 290,
+    "area_ha": 19583,
+    "irrigation_type": "surface"
+  },
+  "bali_karangasem": {
+    "name": "Karangasem",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 285,
+    "area_ha": 18992,
+    "irrigation_type": "rainfed"
+  },
+  "bali_klungkung": {
+    "name": "Klungkung",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 278,
+    "area_ha": 17057,
+    "irrigation_type": "surface"
+  },
+  "bali_negara": {
+    "name": "Negara",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 280,
+    "area_ha": 18753,
+    "irrigation_type": "rainfed"
+  },
+  "bali_singaraja": {
+    "name": "Singaraja",
+    "province": "Bali",
+    "watershed_id": "brantas",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 282,
+    "area_ha": 16083,
+    "irrigation_type": "rainfed"
+  },
+  "sumut_deli_serdang": {
+    "name": "Deli Serdang",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 285,
+    "area_ha": 19259,
+    "irrigation_type": "surface"
+  },
+  "sumut_langkat": {
+    "name": "Langkat",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 288,
+    "area_ha": 14253,
+    "irrigation_type": "rainfed"
+  },
+  "sumut_serdang_bedagai": {
+    "name": "Serdang Bedagai",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 282,
+    "area_ha": 8375,
+    "irrigation_type": "surface"
+  },
+  "sumut_asahan": {
+    "name": "Asahan",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 278,
+    "area_ha": 12120,
+    "irrigation_type": "rainfed"
+  },
+  "sumut_labuhan_batu": {
+    "name": "Labuhan Batu",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 272,
+    "area_ha": 12467,
+    "irrigation_type": "rainfed"
+  },
+  "sumut_tapanuli_selatan": {
+    "name": "Tapanuli Selatan",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "rice",
+    "typical_planting_doy": 295,
+    "area_ha": 14224,
+    "irrigation_type": "surface"
+  },
+  "sumut_tapanuli_utara": {
+    "name": "Tapanuli Utara",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "corn",
+    "typical_planting_doy": 300,
+    "area_ha": 10983,
+    "irrigation_type": "rainfed"
+  },
+  "sumut_karo": {
+    "name": "Karo",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "sugarcane",
+    "typical_planting_doy": 305,
+    "area_ha": 19319,
+    "irrigation_type": "surface"
+  },
+  "sumut_dairi": {
+    "name": "Dairi",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "soybean",
+    "typical_planting_doy": 302,
+    "area_ha": 19997,
+    "irrigation_type": "rainfed"
+  },
+  "sumut_pakpak_bharat": {
+    "name": "Pakpak Bharat",
+    "province": "North Sumatra",
+    "watershed_id": "citarum",
+    "dominant_crop": "dryland_rice",
+    "typical_planting_doy": 308,
+    "area_ha": 11009,
+    "irrigation_type": "rainfed"
+  }
+}
