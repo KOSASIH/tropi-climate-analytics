@@ -1,0 +1,265 @@
+# PrometheusRule: Pipeline SLA breach alerts — Tropi Climate Analytics
+# Covers the three Sprint 2 SLA thresholds:
+#   1. Ingestion lag > 30 min   (satellite data staleness)
+#   2. Model inference p99 > 5s (ANALYTICA serving latency)
+#   3. Flood alert delivery > 2 min (end-to-end BPBD pipeline)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tropi-pipeline-sla
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+
+  # ----------------------------------------------------------------
+  # 1. Data Ingestion Lag
+  # Metric: tropi_pipeline_last_ingestion_success_timestamp_seconds
+  #   — set by each Airflow DAG task on successful completion
+  #   — also validated via Kafka topic high-water mark freshness
+  # ----------------------------------------------------------------
+  - name: tropi.ingestion.sla
+    interval: 60s
+    rules:
+
+    - alert: TropiIngestionLagHigh
+      expr: |
+        (
+          time() - tropi_pipeline_last_ingestion_success_timestamp_seconds
+        ) > 1800
+      for: 5m
+      labels:
+        severity: warning
+        team: data-platform
+        sla: ingestion
+      annotations:
+        summary: "Ingestion lag > 30 min on pipeline {{ $labels.pipeline }}"
+        description: |
+          Pipeline {{ $labels.pipeline }} last succeeded
+          {{ $value | humanizeDuration }} ago (threshold: 30m).
+          Check Airflow DAG status and Kafka consumer group lag.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/ingestion-lag
+
+    - alert: TropiIngestionLagCritical
+      expr: |
+        (
+          time() - tropi_pipeline_last_ingestion_success_timestamp_seconds
+        ) > 3600
+      for: 5m
+      labels:
+        severity: critical
+        team: data-platform
+        sla: ingestion
+      annotations:
+        summary: "Ingestion lag CRITICAL (> 1h) on pipeline {{ $labels.pipeline }}"
+        description: |
+          Pipeline {{ $labels.pipeline }} has not completed successfully in
+          {{ $value | humanizeDuration }}. Satellite data is stale.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/ingestion-lag
+
+    # Kafka consumer lag guard (complementary metric)
+    - alert: TropiKafkaConsumerLagHigh
+      expr: |
+        sum by (topic, consumer_group) (
+          kafka_consumer_group_lag
+        ) > 50000
+      for: 10m
+      labels:
+        severity: warning
+        team: data-platform
+        sla: ingestion
+      annotations:
+        summary: "Kafka consumer lag > 50k on topic {{ $labels.topic }}"
+        description: |
+          Consumer group {{ $labels.consumer_group }} on topic {{ $labels.topic }}
+          has accumulated {{ $value }} unprocessed messages.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/kafka-lag
+
+    - alert: TropiQPEIngestionStale
+      expr: |
+        (
+          time() - tropi_pipeline_last_ingestion_success_timestamp_seconds{pipeline="qpe_fusion_30min"}
+        ) > 1800
+      for: 2m
+      labels:
+        severity: critical
+        team: data-platform
+        sla: ingestion
+        pipeline: qpe_fusion_30min
+      annotations:
+        summary: "QPE fusion pipeline stale: no successful run in 30+ minutes"
+        description: |
+          The qpe_fusion_30min DAG (GPM IMERG-HHR + BMKG Kriging) has not produced
+          a successful output in {{ $value | humanizeDuration }}.
+          Flood early warning system is degraded.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/qpe-stale
+
+  # ----------------------------------------------------------------
+  # 2. Model Inference Latency
+  # Metric: http_request_duration_seconds (histogram)
+  #   labeled with handler matching /predict, /inference, /forecast
+  # Also: tropi_model_inference_duration_seconds (custom histogram
+  #   exported by ANALYTICA serving pods)
+  # ----------------------------------------------------------------
+  - name: tropi.inference.sla
+    interval: 30s
+    rules:
+
+    - alert: TropiModelInferenceP99High
+      expr: |
+        histogram_quantile(0.99,
+          sum by (le, model, namespace) (
+            rate(tropi_model_inference_duration_seconds_bucket[5m])
+          )
+        ) > 5
+      for: 5m
+      labels:
+        severity: warning
+        team: analytica
+        sla: inference
+      annotations:
+        summary: "Model inference p99 latency > 5s for {{ $labels.model }}"
+        description: |
+          The p99 inference latency for model {{ $labels.model }}
+          in namespace {{ $labels.namespace }} is {{ $value | humanizeDuration }}.
+          SLA threshold: 5s. Check GPU node availability and model batch size.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/inference-latency
+
+    - alert: TropiModelInferenceP99Critical
+      expr: |
+        histogram_quantile(0.99,
+          sum by (le, model, namespace) (
+            rate(tropi_model_inference_duration_seconds_bucket[5m])
+          )
+        ) > 15
+      for: 3m
+      labels:
+        severity: critical
+        team: analytica
+        sla: inference
+      annotations:
+        summary: "Model inference p99 CRITICAL (> 15s) for {{ $labels.model }}"
+        description: |
+          Model {{ $labels.model }} p99 inference latency is {{ $value | humanizeDuration }}.
+          Downstream flood forecasting and dashboard feeds are severely impacted.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/inference-latency
+
+    - alert: TropiModelServingDown
+      expr: |
+        up{job=~"analytica.*", namespace="analytica"} == 0
+      for: 2m
+      labels:
+        severity: critical
+        team: analytica
+        sla: inference
+      annotations:
+        summary: "ANALYTICA model serving pod down"
+        description: "No serving pods in the analytica namespace are reachable by Prometheus scrape."
+
+  # ----------------------------------------------------------------
+  # 3. Flood Alert Delivery Latency
+  # Metric: tropi_flood_alert_delivery_duration_seconds (histogram)
+  #   measured from flood threshold breach detection to BPBD webhook ACK
+  # Also: tropi_flood_alert_last_delivery_timestamp_seconds
+  # ----------------------------------------------------------------
+  - name: tropi.flood.sla
+    interval: 30s
+    rules:
+
+    - alert: TropiFloodAlertDeliveryLate
+      expr: |
+        histogram_quantile(0.95,
+          sum by (le, river) (
+            rate(tropi_flood_alert_delivery_duration_seconds_bucket[10m])
+          )
+        ) > 120
+      for: 2m
+      labels:
+        severity: critical
+        team: hydrologis
+        sla: flood-alert
+      annotations:
+        summary: "Flood alert delivery > 2 min for river {{ $labels.river }}"
+        description: |
+          p95 flood alert delivery time for {{ $labels.river }} is
+          {{ $value | humanizeDuration }} (threshold: 2m).
+          Check BPBD webhook endpoint health and Kafka flood.early_warning consumer lag.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/flood-alert-delivery
+
+    - alert: TropiFloodAlertBPBDWebhookFailing
+      expr: |
+        rate(tropi_flood_alert_webhook_failures_total[5m]) > 0
+      for: 2m
+      labels:
+        severity: critical
+        team: hydrologis
+        sla: flood-alert
+      annotations:
+        summary: "BPBD flood alert webhook is failing"
+        description: |
+          Flood alert delivery to BPBD is failing.
+          {{ $value }} failures/sec observed in the last 5 minutes.
+          Active flood events may not be reaching emergency responders.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/bpbd-webhook
+
+    - alert: TropiFloodAlertPipelineStale
+      expr: |
+        (
+          time() - tropi_pipeline_last_ingestion_success_timestamp_seconds{pipeline="flood_early_warning_30min"}
+        ) > 1800
+      for: 3m
+      labels:
+        severity: critical
+        team: hydrologis
+        sla: flood-alert
+      annotations:
+        summary: "Flood early warning pipeline stale: no run in 30+ min"
+        description: |
+          The flood_early_warning_30min DAG (LSTM Ciliwung/Brantas/Solo) has not run
+          in {{ $value | humanizeDuration }}. Real-time flood risk is not being assessed.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/flood-pipeline-stale
+
+  # ----------------------------------------------------------------
+  # 4. Overall Platform SLO burn rate (99.5% uptime target)
+  # ----------------------------------------------------------------
+  - name: tropi.slo
+    rules:
+
+    - alert: TropiSLOBurnRateCritical
+      expr: |
+        (
+          sum(rate(http_requests_total{job="tropi-api",code=~"5.."}[1h]))
+          /
+          sum(rate(http_requests_total{job="tropi-api"}[1h]))
+        ) > 14 * (1 - 0.995)
+      for: 2m
+      labels:
+        severity: critical
+        team: platform
+        sla: api
+      annotations:
+        summary: "API error burn rate critical: exhausting monthly error budget"
+        description: |
+          The 1h error rate is burning the 30-day error budget at 14x speed.
+          Immediate action required to protect 99.5% uptime SLO.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/slo-burn
+
+    - alert: TropiSLOBurnRateWarning
+      expr: |
+        (
+          sum(rate(http_requests_total{job="tropi-api",code=~"5.."}[6h]))
+          /
+          sum(rate(http_requests_total{job="tropi-api"}[6h]))
+        ) > 6 * (1 - 0.995)
+      for: 15m
+      labels:
+        severity: warning
+        team: platform
+        sla: api
+      annotations:
+        summary: "API error burn rate elevated (6x budget consumption)"
+        description: |
+          The 6h error rate is burning the error budget at 6x speed.
+          Investigate before this becomes a critical breach.

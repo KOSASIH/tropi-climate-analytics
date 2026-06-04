@@ -1,0 +1,190 @@
+# kube-prometheus-stack Helm values — Tropi Climate Analytics
+# Deploy: helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack \
+#           -n monitoring --create-namespace -f k8s/monitoring/values.yaml
+
+globalConfig:
+  scrape_interval: 30s
+  evaluation_interval: 30s
+
+prometheus:
+  prometheusSpec:
+    retention: 30d
+    retentionSize: 80GB
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 100Gi
+    # Scrape all ServiceMonitors and PodMonitors across namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    # Load pipeline SLA alert rules
+    additionalPrometheusRulesMap:
+      pipeline-sla:
+        groups:
+          - name: tropi.pipeline.sla
+            # Loaded from k8s/monitoring/alerts/pipeline-sla.yaml via ArgoCD
+
+    # Scrape configs for components not using ServiceMonitor
+    additionalScrapeConfigs:
+      - job_name: tropi-api
+        static_configs:
+          - targets: ['tropi-api.api-gateway.svc:8000']
+        metrics_path: /metrics
+        scrape_interval: 15s
+
+      - job_name: tropi-etl-workers
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: { names: [data-flow, hydrologis] }
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: 'true'
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+            action: replace
+            target_label: __metrics_path__
+            regex: (.+)
+
+      - job_name: tropi-analytica
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces: { names: [analytica] }
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+            action: keep
+            regex: 'true'
+
+alertmanager:
+  alertmanagerSpec:
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: gp3
+          accessModes: [ReadWriteOnce]
+          resources:
+            requests:
+              storage: 10Gi
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['namespace', 'alertname', 'severity']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 4h
+      receiver: 'default'
+      routes:
+        - match: { severity: critical }
+          receiver: pagerduty-critical
+          continue: true
+        - match: { severity: warning }
+          receiver: slack-platform
+        - match: { alertname: TropiFloodAlertDeliveryLate }
+          receiver: bpbd-webhook
+          group_wait: 0s      # zero-wait for flood alerts
+          repeat_interval: 5m
+    receivers:
+      - name: 'default'
+        slack_configs:
+          - api_url: 'PLACEHOLDER_SLACK_WEBHOOK'
+            channel: '#platform-alerts'
+            title: '[{{ .Status | toUpper }}] {{ .GroupLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+      - name: pagerduty-critical
+        pagerduty_configs:
+          - service_key: PLACEHOLDER_PAGERDUTY_KEY
+      - name: slack-platform
+        slack_configs:
+          - api_url: 'PLACEHOLDER_SLACK_WEBHOOK'
+            channel: '#platform-alerts'
+      - name: bpbd-webhook
+        webhook_configs:
+          - url: 'PLACEHOLDER_BPBD_WEBHOOK_URL'
+            send_resolved: true
+
+grafana:
+  enabled: true
+  adminPassword: PLACEHOLDER_GRAFANA_PASSWORD
+  persistence:
+    enabled: true
+    storageClassName: gp3
+    size: 10Gi
+  grafana.ini:
+    server:
+      root_url: https://grafana.tropi-climate.id
+    auth:
+      disable_login_form: false
+    auth.anonymous:
+      enabled: false
+  datasources:
+    datasources.yaml:
+      apiVersion: 1
+      datasources:
+        - name: Prometheus
+          type: prometheus
+          url: http://kube-prometheus-stack-prometheus:9090
+          isDefault: true
+        - name: Loki
+          type: loki
+          url: http://loki:3100
+  dashboardProviders:
+    dashboardproviders.yaml:
+      apiVersion: 1
+      providers:
+        - name: tropi-climate
+          orgId: 1
+          folder: Tropi Climate
+          type: file
+          disableDeletion: false
+          updateIntervalSeconds: 30
+          options:
+            path: /var/lib/grafana/dashboards/tropi-climate
+  # Import community dashboards by ID
+  dashboards:
+    default:
+      kubernetes-cluster:
+        gnetId: 7249
+        revision: 1
+        datasource: Prometheus
+      kafka-overview:
+        gnetId: 7589
+        revision: 5
+        datasource: Prometheus
+      rds-enhanced:
+        gnetId: 707
+        revision: 1
+        datasource: Prometheus
+
+# Enable ServiceMonitors for core components
+kubeApiServer:    { enabled: true }
+kubeControllerManager: { enabled: true }
+kubeScheduler:    { enabled: true }
+kubeEtcd:         { enabled: true }
+kubelet:          { enabled: true }
+kubeProxy:        { enabled: true }
+nodeExporter:     { enabled: true }
+kubeStateMetrics: { enabled: true }
+
+# Default alert rules (keep all, we add custom on top)
+defaultRules:
+  create: true
+  rules:
+    alertmanager: true
+    etcd: true
+    configReloaders: true
+    general: true
+    k8s: true
+    kubeApiserverAvailability: true
+    kubePrometheusNodeAlerting: true
+    kubePrometheusNodeRecording: true
+    kubernetesApps: true
+    kubernetesResources: true
+    kubernetesStorage: true
+    kubernetesSystem: true
+    node: true
+    prometheusOperator: true
