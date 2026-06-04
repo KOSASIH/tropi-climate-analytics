@@ -204,3 +204,73 @@ DRIFT_RESPONSE_TRIGGERED = Counter(
     "Drift remediation plans generated per model and urgency level",
     ["model_id", "urgency"],
 )
+
+# ---------------------------------------------------------------------------
+# Sprint 9 — Online Learner (Q1 / online_learner.py)
+# tropi_online_update_mae_delta{model_id} Gauge
+# tropi_online_update_total{model_id, status} Counter
+# ---------------------------------------------------------------------------
+
+ONLINE_UPDATE_MAE_DELTA = Gauge(
+    "tropi_online_update_mae_delta",
+    "MAE delta percentage from last incremental model update (negative = improvement)",
+    ["model_id"],
+)
+
+ONLINE_UPDATE_COUNT = Counter(
+    "tropi_online_update_total",
+    "Incremental online update runs per model and outcome status",
+    ["model_id", "status"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 9 — Ensemble Calibrator (Q3 / ensemble_calibrator.py)
+# tropi_calibration_ece{model_id} Gauge
+# tropi_calibration_picp{model_id} Gauge
+# ---------------------------------------------------------------------------
+
+ECE_SCORE = Gauge(
+    "tropi_calibration_ece",
+    "Expected Calibration Error after post-hoc calibration per model",
+    ["model_id"],
+)
+
+PICP_SCORE = Gauge(
+    "tropi_calibration_picp",
+    "Prediction Interval Coverage Probability (90% CI) per model",
+    ["model_id"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 9 — Climate Regime Detector (Q4 / climate_regime_detector.py)
+# tropi_climate_oni_value Gauge (no labels)
+# tropi_climate_dmi_value Gauge (no labels)
+# tropi_climate_regime_active{regime} Gauge (1.0 if active)
+# ---------------------------------------------------------------------------
+
+ONI_VALUE = Gauge(
+    "tropi_climate_oni_value",
+    "Current Oceanic Nino Index (ONI) value in degrees Celsius",
+)
+
+DMI_VALUE = Gauge(
+    "tropi_climate_dmi_value",
+    "Current Dipole Mode Index (DMI / IOD) value in degrees Celsius",
+)
+
+CLIMATE_REGIME_ACTIVE = Gauge(
+    "tropi_climate_regime_active",
+    "Binary flag indicating whether a specific climate regime is currently active (1=active, 0=inactive)",
+    ["regime"],
+)
+
+# ---------------------------------------------------------------------------
+# Sprint 9 — Model Explainability (Q5 / model_explainability.py)
+# tropi_shap_computation_time_s{model_id} Gauge
+# ---------------------------------------------------------------------------
+
+SHAP_COMPUTATION_TIME_S = Gauge(
+    "tropi_shap_computation_time_s",
+    "Wall-clock seconds to compute SHAP explanations for the last batch per model",
+    ["model_id"],
+)
