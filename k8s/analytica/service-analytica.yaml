@@ -1,0 +1,26 @@
+# Service: analytica-model-server
+# Exposes the FastAPI serving pod's metrics port to the ServiceMonitor.
+# Apply this alongside ANALYTICA's Deployment in the analytica namespace.
+# CLOUD-FORGE owns this file; ANALYTICA owns the Deployment/Pod spec.
+apiVersion: v1
+kind: Service
+metadata:
+  name: analytica-model-server
+  namespace: analytica
+  labels:
+    app: analytica-model-server
+    app.kubernetes.io/part-of: tropi-climate
+    app.kubernetes.io/component: model-serving
+spec:
+  selector:
+    app: analytica-model-server
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8080
+      protocol: TCP
+    - name: metrics
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  type: ClusterIP

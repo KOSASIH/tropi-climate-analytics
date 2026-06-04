@@ -1,0 +1,50 @@
+# ServiceMonitor: analytica-model-server
+# Configures Prometheus (via kube-prometheus-stack operator) to scrape
+# ANALYTICA FastAPI /metrics endpoint on port 8080.
+#
+# Prerequisite: ANALYTICA pods MUST carry these labels:
+#   app: analytica-model-server
+#   app.kubernetes.io/part-of: tropi-climate
+# And the container port named "metrics" (containerPort: 8080).
+# Pod annotations (prometheus.io/scrape=true etc.) are NOT required
+# when a ServiceMonitor is present — the operator bypasses annotation discovery.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: analytica-model-server
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack   # must match prometheusSpec.serviceMonitorSelector
+spec:
+  jobLabel: analytica-model-server
+  selector:
+    matchLabels:
+      app: analytica-model-server
+  namespaceSelector:
+    matchNames:
+      - analytica
+  endpoints:
+    - port: metrics          # must match Service port name
+      path: /metrics
+      interval: 15s
+      scrapeTimeout: 10s
+      honorLabels: true
+      relabelings:
+        # Preserve model label from metric labels
+        - sourceLabels: [__meta_kubernetes_pod_label_model]
+          targetLabel: model
+          action: replace
+        # Add namespace for alert routing
+        - sourceLabels: [__meta_kubernetes_namespace]
+          targetLabel: namespace
+          action: replace
+        # Add pod name for debugging
+        - sourceLabels: [__meta_kubernetes_pod_name]
+          targetLabel: pod
+          action: replace
+      metricRelabelings:
+        # Keep only tropi_model_* and http_request_* metrics, drop high-cardinality noise
+        - sourceLabels: [__name__]
+          regex: 'tropi_model_.+|http_requests_total|http_request_duration_seconds.*|process_.*|python_gc_.*'
+          action: keep

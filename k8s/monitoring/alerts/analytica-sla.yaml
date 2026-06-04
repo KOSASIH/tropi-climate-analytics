@@ -1,0 +1,90 @@
+# PrometheusRule: ANALYTICA SLA alert rules (updated)
+# Identical rule expressions to pipeline-sla.yaml group tropi.inference.sla
+# but scoped to the analytica namespace and the ServiceMonitor job label.
+# These override/complement the rules in pipeline-sla.yaml — both are applied
+# by the Prometheus operator; deduplication via alertname is handled by Alertmanager.
+#
+# Required metric (from ANALYTICA SHA 9b1d6b01):
+#   tropi_model_inference_duration_seconds_bucket{model=<name>, le=<bound>}
+#   Labels: xgb_precip | prophet_seasonal | cnn_landcover | lstm_streamflow
+#   Explicit bucket bounds include 5.0 and 15.0 (confirmed by ANALYTICA)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: tropi-analytica-sla
+  namespace: monitoring
+  labels:
+    app: kube-prometheus-stack
+    release: kube-prometheus-stack
+spec:
+  groups:
+  - name: tropi.analytica.sla
+    interval: 30s
+    rules:
+
+    # ── p99 > 5s: Warning ──────────────────────────────────────────
+    - alert: TropiModelInferenceP99High
+      expr: |
+        histogram_quantile(0.99,
+          sum by (le, model) (
+            rate(tropi_model_inference_duration_seconds_bucket{job="analytica-model-server"}[5m])
+          )
+        ) > 5
+      for: 5m
+      labels:
+        severity: warning
+        team: analytica
+        sla: inference
+      annotations:
+        summary: "ANALYTICA model {{ $labels.model }} p99 inference > 5s"
+        description: |
+          Model {{ $labels.model }} p99 inference latency is {{ $value | humanizeDuration }}
+          (SLA threshold: 5s). Scrape job: analytica-model-server.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/inference-latency
+        dashboard: https://grafana.tropi-climate.id/d/analytica-sla
+
+    # ── p99 > 15s: Critical ────────────────────────────────────────
+    - alert: TropiModelInferenceP99Critical
+      expr: |
+        histogram_quantile(0.99,
+          sum by (le, model) (
+            rate(tropi_model_inference_duration_seconds_bucket{job="analytica-model-server"}[5m])
+          )
+        ) > 15
+      for: 3m
+      labels:
+        severity: critical
+        team: analytica
+        sla: inference
+      annotations:
+        summary: "ANALYTICA model {{ $labels.model }} p99 inference CRITICAL (> 15s)"
+        description: |
+          Model {{ $labels.model }} p99 inference latency is {{ $value | humanizeDuration }}.
+          Downstream flood forecasting and API responses are severely degraded.
+        runbook: https://github.com/KOSASIH/tropi-climate-analytics/wiki/runbooks/inference-latency
+        dashboard: https://grafana.tropi-climate.id/d/analytica-sla
+
+    # ── All serving pods down ──────────────────────────────────────
+    - alert: TropiModelServingDown
+      expr: |
+        absent(up{job="analytica-model-server"} == 1)
+      for: 2m
+      labels:
+        severity: critical
+        team: analytica
+        sla: inference
+      annotations:
+        summary: "All ANALYTICA model serving pods are unreachable"
+        description: |
+          No pod with job=analytica-model-server is reporting healthy to Prometheus.
+          All 4 model endpoints (xgb_precip, prophet_seasonal, cnn_landcover, lstm_streamflow)
+          are offline. Check analytica namespace pod status and node availability.
+
+    # ── Recording rule: pre-compute p99 for Grafana dashboards ────
+    - record: tropi:model_inference_p99:rate5m
+      expr: |
+        histogram_quantile(0.99,
+          sum by (le, model) (
+            rate(tropi_model_inference_duration_seconds_bucket{job="analytica-model-server"}[5m])
+          )
+        )
