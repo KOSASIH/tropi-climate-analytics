@@ -1,21 +1,21 @@
 """
-Batch Inference DAG — ANALYTICA Sprint 5 F5
+Batch Inference DAG — ANALYTICA Sprint 6 H5
 dag_id: analytica_batch_inference
 Schedule: 0 1 * * * Asia/Jakarta (daily 01:00 WIB)
 SLA: 45 minutes
 
 Pipeline:
   prepare_grid_cells
-    -> run_batch_xgb
-    -> run_batch_lstm
-    -> run_batch_tft
+    -> run_batch_xgb  ─┐
+    -> run_batch_lstm  ├─ parallel
+    -> run_batch_tft  ─┘
     -> aggregate_outputs
     -> write_batch_report
 
-Scope: all active grid cells (workspace/config/grid_cells.json)
-Output: workspace/output/batch_forecasts/{YYYYMMDD}/  -- one JSON per model per grid cell
-Batch report: workspace/output/batch_forecasts/{YYYYMMDD}/summary.md (consumed by VISUALIA)
-Calls record_ingestion_success('batch_inference_daily') on completion.
+Grid cell source: workspace/config/grid_cells.json (20 DAS Strategis Nasional stub)
+Per-model output:  workspace/output/batch_forecasts/{YYYYMMDD}/{model_id}_{grid_cell_id}.json
+Summary report:    workspace/output/batch_forecasts/{YYYYMMDD}/summary.md  (consumed by VISUALIA)
+Completion signal: record_ingestion_success('batch_inference_daily')
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ import json
 import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-DAG_ID       = "analytica_batch_inference"
-SCHEDULE     = "0 1 * * *"
-TIMEZONE     = "Asia/Jakarta"
-SLA_SECONDS  = 45 * 60   # 45 minutes
+DAG_ID      = "analytica_batch_inference"
+SCHEDULE    = "0 1 * * *"
+TIMEZONE    = "Asia/Jakarta"
+SLA_SECONDS = 45 * 60
 
 GRID_CELLS_PATH = Path("workspace/config/grid_cells.json")
 OUTPUT_ROOT     = Path("workspace/output/batch_forecasts")
@@ -55,12 +55,29 @@ FORECAST_HORIZONS: Dict[str, int] = {
     "tft_climate_forecast": 168,
 }
 
-ISLAND_REGIONS = ["sumatra", "java", "kalimantan", "sulawesi", "papua"]
-
-
-def _province_to_region(idx: int) -> str:
-    """Simple deterministic province-to-island mapping for stubs."""
-    return ISLAND_REGIONS[idx % len(ISLAND_REGIONS)]
+# 20 DAS Strategis Nasional fallback — mirrors workspace/config/grid_cells.json
+_DAS_STUB: List[dict] = [
+    {"grid_cell_id": "das_ciliwung",      "region": "java",         "province": "DKI Jakarta / Jawa Barat"},
+    {"grid_cell_id": "das_citarum",       "region": "java",         "province": "Jawa Barat"},
+    {"grid_cell_id": "das_brantas",       "region": "java",         "province": "Jawa Timur"},
+    {"grid_cell_id": "das_bengawan_solo", "region": "java",         "province": "Jawa Tengah / Jawa Timur"},
+    {"grid_cell_id": "das_serayu",        "region": "java",         "province": "Jawa Tengah"},
+    {"grid_cell_id": "das_musi",          "region": "sumatra",      "province": "Sumatera Selatan"},
+    {"grid_cell_id": "das_batanghari",    "region": "sumatra",      "province": "Jambi / Sumatera Barat"},
+    {"grid_cell_id": "das_kampar",        "region": "sumatra",      "province": "Riau"},
+    {"grid_cell_id": "das_rokan",         "region": "sumatra",      "province": "Riau / Sumatera Utara"},
+    {"grid_cell_id": "das_asahan",        "region": "sumatra",      "province": "Sumatera Utara"},
+    {"grid_cell_id": "das_kapuas",        "region": "kalimantan",   "province": "Kalimantan Barat"},
+    {"grid_cell_id": "das_mahakam",       "region": "kalimantan",   "province": "Kalimantan Timur"},
+    {"grid_cell_id": "das_barito",        "region": "kalimantan",   "province": "Kalimantan Tengah/Selatan"},
+    {"grid_cell_id": "das_kahayan",       "region": "kalimantan",   "province": "Kalimantan Tengah"},
+    {"grid_cell_id": "das_tondano",       "region": "sulawesi",     "province": "Sulawesi Utara"},
+    {"grid_cell_id": "das_saddang",       "region": "sulawesi",     "province": "Sulawesi Selatan"},
+    {"grid_cell_id": "das_lariang",       "region": "sulawesi",     "province": "Sulawesi Tengah"},
+    {"grid_cell_id": "das_memberamo",     "region": "maluku_papua", "province": "Papua"},
+    {"grid_cell_id": "das_digul",         "region": "maluku_papua", "province": "Papua Selatan"},
+    {"grid_cell_id": "das_baliem",        "region": "maluku_papua", "province": "Papua Pegunungan"},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -70,7 +87,8 @@ def _province_to_region(idx: int) -> str:
 def prepare_grid_cells(**context) -> None:
     """
     Load active grid cells from workspace/config/grid_cells.json.
-    Creates the output directory for today's run. Pushes cell list to XCom.
+    Falls back to the 20 DAS Strategis Nasional in-memory stub if file absent.
+    Creates output directory for today's run. Pushes cell list to XCom.
     """
     run_ds  = context["ds"]
     out_dir = OUTPUT_ROOT / run_ds.replace("-", "")
@@ -79,47 +97,36 @@ def prepare_grid_cells(**context) -> None:
     if GRID_CELLS_PATH.exists():
         with open(GRID_CELLS_PATH) as f:
             config = json.load(f)
-        grid_cells: List[dict] = [
-            gc for gc in config.get("grid_cells", []) if gc.get("active", True)
-        ]
+        grid_cells: List[dict] = [gc for gc in config.get("grid_cells", []) if gc.get("active", True)]
+        logger.info("Loaded %d grid cells from %s", len(grid_cells), GRID_CELLS_PATH)
     else:
-        logger.warning("grid_cells.json not found at %s -- using stub", GRID_CELLS_PATH)
-        grid_cells = [
-            {
-                "grid_cell_id": f"gc_{i:04d}",
-                "lat": round(-6.0 + i * 0.04, 4),
-                "lon": round(107.0 + i * 0.04, 4),
-                "province": f"province_{i:02d}",
-                "region": _province_to_region(i),
-            }
-            for i in range(950)
-        ]
+        logger.warning("grid_cells.json absent — using 20 DAS Strategis Nasional stub")
+        grid_cells = _DAS_STUB
 
-    logger.info("Batch inference: %d active grid cells for %s", len(grid_cells), run_ds)
     context["ti"].xcom_push(key="grid_cells", value=grid_cells)
     context["ti"].xcom_push(key="out_dir",    value=str(out_dir))
+    context["ti"].xcom_push(key="run_ds",     value=run_ds)
 
 
 def run_batch_xgb(**context) -> None:
-    """Run XGBoost precipitation nowcast over all grid cells."""
+    """XGBoost precipitation nowcast — all grid cells."""
     _run_batch_model("xgb_precip_nowcast", context)
 
 
 def run_batch_lstm(**context) -> None:
-    """Run LSTM streamflow forecast over all grid cells."""
+    """LSTM streamflow forecast — all grid cells."""
     _run_batch_model("lstm_streamflow", context)
 
 
 def run_batch_tft(**context) -> None:
-    """Run TFT multi-variate climate forecast over all grid cells."""
+    """TFT multi-variate climate forecast — all grid cells."""
     _run_batch_model("tft_climate_forecast", context)
 
 
-def _run_batch_model(model_name: str, context: dict) -> None:
+def _run_batch_model(model_id: str, context: dict) -> None:
     """
     Core batch loop for a single model.
-    Features via FeatureStoreClient (online), inference via model.predict(),
-    writes one JSON per grid cell to out_dir/{model_name}/.
+    Output: workspace/output/batch_forecasts/{YYYYMMDD}/{model_id}_{grid_cell_id}.json
     """
     from src.data.feature_store_client import FeatureStoreClient
     from src.serving.inference_cache   import InferenceCache
@@ -127,16 +134,13 @@ def _run_batch_model(model_name: str, context: dict) -> None:
     ti         = context["ti"]
     grid_cells = ti.xcom_pull(key="grid_cells", task_ids="prepare_grid_cells")
     out_dir    = Path(ti.xcom_pull(key="out_dir", task_ids="prepare_grid_cells"))
-    run_ds     = context["ds"]
+    run_ds     = ti.xcom_pull(key="run_ds",     task_ids="prepare_grid_cells")
     issued     = date.fromisoformat(run_ds)
-    horizon    = FORECAST_HORIZONS.get(model_name, 72)
-
-    model_dir  = out_dir / model_name
-    model_dir.mkdir(parents=True, exist_ok=True)
+    horizon    = FORECAST_HORIZONS.get(model_id, 72)
 
     fs     = FeatureStoreClient()
     cache  = InferenceCache()
-    model  = _load_model(model_name)
+    model  = _load_model(model_id)
     errors = 0
 
     for gc in grid_cells:
@@ -147,15 +151,15 @@ def _run_batch_model(model_name: str, context: dict) -> None:
                 feature_refs=getattr(model, "FEATURE_REFS", []),
             )
             input_key = {"grid_cell_id": gc_id, "forecast_horizon": horizon, "issued_date": run_ds}
-            cached_pred = cache.get(model_name, getattr(model, "version", "prod"), input_key)
-            if cached_pred:
-                pred = cached_pred
-            else:
+            pred = cache.get(model_id, getattr(model, "version", "prod"), input_key)
+            if not pred:
                 pred = model.predict(features=features_df, forecast_horizon=horizon, issued_date=issued)
-                cache.set(model_name, getattr(model, "version", "prod"), input_key, pred)
+                cache.set(model_id, getattr(model, "version", "prod"), input_key, pred)
 
-            (model_dir / f"{gc_id}.json").write_text(json.dumps({
-                "model":               model_name,
+            # Output path: {model_id}_{grid_cell_id}.json (Sprint 6 spec)
+            out_file = out_dir / f"{model_id}_{gc_id}.json"
+            out_file.write_text(json.dumps({
+                "model_id":            model_id,
                 "grid_cell_id":        gc_id,
                 "issued_date":         run_ds,
                 "forecast_horizon_h":  horizon,
@@ -165,48 +169,46 @@ def _run_batch_model(model_name: str, context: dict) -> None:
                 "region":              gc.get("region"),
             }, default=str))
         except Exception as exc:
-            logger.warning("Batch %s failed for gc=%s: %s", model_name, gc_id, exc)
+            logger.warning("Batch %s failed for gc=%s: %s", model_id, gc_id, exc)
             errors += 1
 
     total = len(grid_cells)
-    logger.info("Batch %s done: %d ok, %d errors", model_name, total - errors, errors)
-    ti.xcom_push(key=f"batch_result_{model_name}", value={
-        "model": model_name, "total": total, "errors": errors
-    })
+    logger.info("Batch %s: %d ok, %d errors", model_id, total - errors, errors)
+    ti.xcom_push(key=f"result_{model_id}", value={"model_id": model_id, "total": total, "errors": errors})
 
 
 def aggregate_outputs(**context) -> None:
-    """Combine per-model summaries into manifest.json."""
+    """Merge per-model XCom summaries into manifest.json."""
     ti      = context["ti"]
     out_dir = Path(ti.xcom_pull(key="out_dir", task_ids="prepare_grid_cells"))
-    run_ds  = context["ds"]
+    run_ds  = ti.xcom_pull(key="run_ds",    task_ids="prepare_grid_cells")
 
     manifest: Dict[str, Any] = {"run_date": run_ds, "models": {}}
-    for model_name in BATCH_MODELS:
-        short = model_name.split("_")[0]
-        result = ti.xcom_pull(key=f"batch_result_{model_name}", task_ids=f"run_batch_{short}")
-        manifest["models"][model_name] = result or {}
+    for model_id in BATCH_MODELS:
+        result = ti.xcom_pull(key=f"result_{model_id}", task_ids=f"run_batch_{model_id.split('_')[0]}")
+        manifest["models"][model_id] = result or {}
 
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
-    logger.info("Manifest written to %s/manifest.json", out_dir)
     ti.xcom_push(key="manifest", value=manifest)
+    logger.info("Manifest written to %s/manifest.json", out_dir)
 
 
 def write_batch_report(**context) -> None:
     """
     Write summary.md consumed by VISUALIA.
-    Calls record_ingestion_success('batch_inference_daily') on completion.
+    Calls record_ingestion_success('batch_inference_daily') on success.
     """
     ti       = context["ti"]
-    out_dir  = Path(ti.xcom_pull(key="out_dir",   task_ids="prepare_grid_cells"))
-    manifest = ti.xcom_pull(key="manifest",        task_ids="aggregate_outputs")
-    run_ds   = context["ds"]
+    out_dir  = Path(ti.xcom_pull(key="out_dir",  task_ids="prepare_grid_cells"))
+    manifest = ti.xcom_pull(key="manifest",       task_ids="aggregate_outputs")
+    run_ds   = ti.xcom_pull(key="run_ds",         task_ids="prepare_grid_cells")
 
     total_cells  = sum(m.get("total",  0) for m in manifest["models"].values())
     total_errors = sum(m.get("errors", 0) for m in manifest["models"].values())
+    yyyymmdd     = run_ds.replace("-", "")
 
     lines = [
-        f"# ANALYTICA Batch Inference Report -- {run_ds}",
+        f"# ANALYTICA Batch Inference Report — {run_ds}",
         "",
         f"**Generated:** {datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%SZ')}  ",
         f"**Grid cells processed:** {total_cells}  ",
@@ -217,61 +219,58 @@ def write_batch_report(**context) -> None:
         "| Model | Cells | Errors |",
         "|-------|-------|--------|",
     ]
-    for model_name, m in manifest["models"].items():
-        lines.append(f"| `{model_name}` | {m.get('total', 0)} | {m.get('errors', 0)} |")
+    for model_id, m in manifest["models"].items():
+        lines.append(f"| `{model_id}` | {m.get('total', 0)} | {m.get('errors', 0)} |")
 
     lines += [
         "",
-        "## Output Location",
+        "## Output Files",
         "",
-        f"`workspace/output/batch_forecasts/{run_ds.replace('-', '')}/`",
-        "",
-        "One JSON file per model per grid cell. See `manifest.json` for the full index.",
+        f"Path: `workspace/output/batch_forecasts/{yyyymmdd}/`  ",
+        f"Pattern: `{{model_id}}_{{grid_cell_id}}.json`  ",
+        "Index: `manifest.json`",
         "",
         "---",
-        "_Auto-generated by analytica_batch_inference DAG. Consumed by VISUALIA._",
+        "_Auto-generated by analytica_batch_inference DAG (Sprint 6 H5). Consumed by VISUALIA._",
     ]
 
-    summary_path = out_dir / "summary.md"
-    summary_path.write_text("\n".join(lines))
-    logger.info("Batch report written: %s", summary_path)
+    (out_dir / "summary.md").write_text("\n".join(lines))
+    logger.info("Batch report written: %s/summary.md", out_dir)
 
     try:
         from src.data.ingestion_tracker import record_ingestion_success
         record_ingestion_success("batch_inference_daily")
         logger.info("record_ingestion_success('batch_inference_daily') OK")
     except ImportError:
-        logger.warning("ingestion_tracker not available -- skipping record_ingestion_success")
+        logger.warning("ingestion_tracker unavailable — skipping record_ingestion_success")
     except Exception as exc:
         logger.warning("record_ingestion_success failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Helpers
 # ---------------------------------------------------------------------------
 
-def _load_model(model_name: str) -> Any:
-    """Load model from MLflow Production registry; fall back to a no-op stub."""
+def _load_model(model_id: str) -> Any:
+    """Load from MLflow Production; fall back to stub."""
     try:
         from src.training.mlflow_registry import MLflowRegistry
-        registry = MLflowRegistry()
-        registry.get_latest_production(model_name)   # raises if absent
-        import mlflow
-        return mlflow.pyfunc.load_model(f"models:/{model_name}/Production")
+        import mlflow.pyfunc
+        MLflowRegistry().get_latest_production(model_id)
+        return mlflow.pyfunc.load_model(f"models:/{model_id}/Production")
     except Exception as exc:
-        logger.warning("Model %s unavailable (%s) -- using _BatchModelStub", model_name, exc)
-        return _BatchModelStub(model_name)
+        logger.warning("Model %s unavailable (%s) — using stub", model_id, exc)
+        return _BatchStub(model_id)
 
 
-class _BatchModelStub:
-    """No-op stub that returns null predictions when the real model is unavailable."""
+class _BatchStub:
     FEATURE_REFS = []
     version = "stub"
 
-    def __init__(self, model_name: str):
-        self.model_name = model_name
+    def __init__(self, model_id: str):
+        self.model_id = model_id
 
-    def predict(self, features, forecast_horizon, issued_date):
+    def predict(self, **kwargs) -> dict:
         return {"prediction": None, "confidence_interval": None}
 
 
@@ -296,7 +295,7 @@ with DAG(
     default_args=default_args,
     catchup=False,
     tags=["analytica", "batch", "inference"],
-    description="Daily batch inference for XGB, LSTM, TFT over all active grid cells",
+    description="Daily batch inference: XGB + LSTM + TFT over 20 DAS Strategis Nasional",
 ) as dag:
 
     t_prepare   = PythonOperator(task_id="prepare_grid_cells", python_callable=prepare_grid_cells)
