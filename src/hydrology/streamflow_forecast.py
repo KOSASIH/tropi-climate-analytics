@@ -1,467 +1,325 @@
 """
-Streamflow Forecast Engine — Sprint 3 Deliverable 1
-HYDROLOGIS | Tropi Climate Analytics
-
-6–24 hour ensemble streamflow forecasts for 3 priority rivers:
-  - Ciliwung   (DKI Jakarta)   WARNING >150 m³/s  EMERGENCY >300 m³/s
-  - Brantas    (East Java)     WARNING >400 m³/s  EMERGENCY >800 m³/s
-  - Solo/Bengawan Solo (Central Java) WARNING >600 m³/s EMERGENCY >1200 m³/s
-
-Model ensemble:
-  - LSTM streamflow (reuse lstm_streamflow_model from ANALYTICA Sprint 0+1)
-  - HBV-light bucket routing (Snow/Soil/Response reservoir)
+streamflow_forecast.py — Sprint 6 E1
+StreamflowForecaster: Rational-method Q = C·i·A streamflow forecasting for
+Ciliwung, Brantas, and Solo rivers across sub-watersheds.
 
 Inputs:
-  - QPE fusion output (Sprint 2: QPEFusionPipeline)
-  - SMAP root-zone soil moisture
-  - Upstream gauge readings (BMKG HIMET API)
+  workspace/data/qpe_latest_validated.json  — QPE precipitation grid
+  workspace/data/bmkg_gauge_latest.json     — BMKG gauge observations
 
 Outputs:
-  - StreamflowForecast Pydantic model per river per horizon
-  - JSON → workspace/output/streamflow/{river_id}_{timestamp}.json
-  - MLflow experiment: 'hydrologis_streamflow'
-  - Prometheus: tropi_pipeline_last_ingestion_success_timestamp_seconds{pipeline=flood_early_warning_30min}
+  workspace/output/streamflow/forecast_{river_id}_{YYYYMMDD_HHMM}.json
 
-Run cadence: 30-minute Airflow DAG (flood_early_warning_30min).
+Prometheus:
+  tropi_streamflow_forecast_peak_cms{river_id, horizon_hr}  Gauge
+  tropi_streamflow_forecast_runs_total{river_id, status}    Counter
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import math
 import os
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Optional, Tuple
-
-import numpy as np
-from pydantic import BaseModel, Field
-
-from src.hydrology.metrics import record_ingestion_success
+from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Constants
+# River / sub-watershed catalogue
 # ---------------------------------------------------------------------------
 
-FORECAST_HORIZONS_HOURS = [6, 12, 24]   # forecast steps
-
-RIVER_CONFIGS: dict[str, dict] = {
-    "ciliwung": {
-        "display_name":    "Ciliwung",
-        "province":        "DKI Jakarta",
-        "catchment_km2":   347.0,
-        "mean_annual_q":   38.0,       # m³/s
-        "threshold_watch":    75.0,    # m³/s — watch (inferred, 0.5× WARNING)
-        "threshold_warning": 150.0,
-        "threshold_emergency": 300.0,
-        "lag_hours":       3.0,        # basin lag to outlet gauge
-        "hbv_beta":        2.0,
-        "hbv_fc":          200.0,      # field capacity (mm)
-        "hbv_k_fast":      0.35,
-        "hbv_k_slow":      0.05,
-    },
-    "brantas": {
-        "display_name":    "Brantas",
-        "province":        "Jawa Timur",
-        "catchment_km2":  11800.0,
-        "mean_annual_q":  230.0,
-        "threshold_watch":   200.0,
-        "threshold_warning": 400.0,
-        "threshold_emergency": 800.0,
-        "lag_hours":       8.0,
-        "hbv_beta":        1.8,
-        "hbv_fc":          220.0,
-        "hbv_k_fast":      0.30,
-        "hbv_k_slow":      0.04,
-    },
-    "solo": {
-        "display_name":    "Bengawan Solo",
-        "province":        "Jawa Tengah",
-        "catchment_km2":  16100.0,
-        "mean_annual_q":  310.0,
-        "threshold_watch":   300.0,
-        "threshold_warning": 600.0,
-        "threshold_emergency": 1200.0,
-        "lag_hours":      12.0,
-        "hbv_beta":        1.6,
-        "hbv_fc":          250.0,
-        "hbv_k_fast":      0.28,
-        "hbv_k_slow":      0.03,
-    },
+# Rational method parameters per sub-watershed:
+#   C  — runoff coefficient (dimensionless, 0–1)
+#   A  — drainage area (km²)
+# Reference: PUPR DAS Strategis Nasional 2023 inventory
+_RIVER_CATALOGUE: dict[str, list[dict[str, Any]]] = {
+    "ciliwung": [
+        {"sub_id": "CI-UP",  "C": 0.65, "A_km2": 149.0},
+        {"sub_id": "CI-MID", "C": 0.72, "A_km2": 211.0},
+        {"sub_id": "CI-LOW", "C": 0.80, "A_km2": 87.0},
+    ],
+    "brantas": [
+        {"sub_id": "BR-UP",  "C": 0.55, "A_km2": 2480.0},
+        {"sub_id": "BR-MID", "C": 0.60, "A_km2": 5310.0},
+        {"sub_id": "BR-LOW", "C": 0.68, "A_km2": 2400.0},
+    ],
+    "solo": [
+        {"sub_id": "SL-UP",  "C": 0.52, "A_km2": 3780.0},
+        {"sub_id": "SL-MID", "C": 0.58, "A_km2": 6520.0},
+        {"sub_id": "SL-LOW", "C": 0.65, "A_km2": 4200.0},
+    ],
 }
 
-MLFLOW_EXPERIMENT = "hydrologis_streamflow"
-OUTPUT_DIR = os.path.join(
-    os.getenv("WORKSPACE_ROOT", "workspace"), "output", "streamflow"
-)
+# Time-of-concentration (hours) per river for lag routing
+_TC_HOURS: dict[str, float] = {
+    "ciliwung": 3.5,
+    "brantas":  8.0,
+    "solo":     12.0,
+}
 
 # ---------------------------------------------------------------------------
-# Enums & models
+# Result dataclasses
 # ---------------------------------------------------------------------------
 
-class FloodStage(str, Enum):
-    NORMAL    = "NORMAL"
-    WATCH     = "WATCH"
-    WARNING   = "WARNING"
-    EMERGENCY = "EMERGENCY"
+@dataclass
+class HorizonForecast:
+    horizon_hr:   int
+    peak_cms:     float          # peak discharge (m³/s)
+    volume_Mm3:   float          # total runoff volume (million m³)
+    lag_hrs:      float          # routing lag to outlet
+    confidence:   float          # 0–1, based on QPE coverage quality
 
 
-class StreamflowForecast(BaseModel):
-    river_id:                str
-    river_name:              str
-    province:                str
-    forecast_horizon_hours:  int
-    discharge_m3s:           list[float] = Field(
-        ..., description="Hourly discharge forecast (m³/s) over horizon"
-    )
-    peak_discharge_m3s:      float
-    flood_stage:             FloodStage
-    confidence_interval_90:  Tuple[float, float] = Field(
-        ..., description="90% CI (lower, upper) for peak discharge (m³/s)"
-    )
-    model_ensemble:          str = "LSTM+HBV"
-    lstm_weight:             float
-    hbv_weight:              float
-    issued_at:               datetime
-    valid_until:             datetime
-
-
-class ForecastRunStatus(BaseModel):
-    run_time_utc:         datetime
-    rivers_processed:     int
-    forecasts:            list[StreamflowForecast]
-    rivers_in_warning:    list[str]
-    rivers_in_emergency:  list[str]
-    output_paths:         list[str]
-    mlflow_run_id:        Optional[str] = None
-    success:              bool
-    error:                Optional[str] = None
+@dataclass
+class StreamflowForecastResult:
+    river_id:       str
+    run_ts:         str          # ISO-8601 UTC
+    horizons:       list[HorizonForecast]
+    peak_cms_max:   float        # max across all horizons
+    data_sources:   dict[str, Any]
+    output_path:    str
+    status:         str          # "ok" | "degraded" | "skipped"
+    warnings:       list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
-# HBV-light routing
+# Main class
 # ---------------------------------------------------------------------------
 
-class HBVModel:
+class StreamflowForecaster:
     """
-    Simplified HBV-light bucket model for streamflow routing.
+    Rational-method streamflow forecaster for Ciliwung, Brantas, and Solo.
 
-    Reservoirs:
-      Snow   : not used (tropical, T always > 0°C)
-      Soil   : SM deficit control → effective precipitation
-      Response : fast + slow linear reservoirs → runoff
+    Q = C · i · A / 3.6
+      where i is mean rainfall intensity (mm/hr) over the contributing area
+      and A is drainage area (km²) → Q in m³/s.
 
-    Reference: Bergström (1995), HBV-96 documentation.
+    Multi-horizon: each horizon aggregates QPE rainfall over that window,
+    routing it through a simple lag model (tc = time-of-concentration).
     """
 
-    def __init__(self, river_id: str) -> None:
-        cfg = RIVER_CONFIGS[river_id]
-        self.beta    = cfg["hbv_beta"]
-        self.fc      = cfg["hbv_fc"]      # mm
-        self.k_fast  = cfg["hbv_k_fast"]
-        self.k_slow  = cfg["hbv_k_slow"]
-        self._sm     = cfg["hbv_fc"] * 0.6   # initial soil moisture (mm)
-        self._s_fast = 10.0                   # fast reservoir (mm)
-        self._s_slow = 20.0                   # slow reservoir (mm)
+    WORKSPACE   = Path(os.environ.get("HYDROLOGIS_WORKSPACE", "workspace"))
+    DATA_DIR    = WORKSPACE / "data"
+    OUTPUT_DIR  = WORKSPACE / "output" / "streamflow"
+    QPE_PATH    = DATA_DIR / "qpe_latest_validated.json"
+    GAUGE_PATH  = DATA_DIR / "bmkg_gauge_latest.json"
 
-    def step(
-        self,
-        precip_mm: float,
-        pet_mm: float = 2.0,
-        dt_hours: float = 6.0,
-    ) -> float:
-        """
-        Advance model one timestep.
+    def __init__(self) -> None:
+        self.OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-        Returns:
-            runoff_mm: Effective runoff (mm) over dt_hours.
-        """
-        dt_frac = dt_hours / 24.0   # fraction of day
-
-        # Soil moisture accounting
-        sm_frac = max(0.0, self._sm / self.fc)
-        recharge = precip_mm * (sm_frac ** self.beta)
-        self._sm = min(self.fc, self._sm + precip_mm - recharge - pet_mm * dt_frac)
-        self._sm = max(0.0, self._sm)
-
-        # Response reservoirs
-        self._s_fast += recharge * 0.7
-        self._s_slow += recharge * 0.3
-        q_fast = self.k_fast * self._s_fast * dt_frac
-        q_slow = self.k_slow * self._s_slow * dt_frac
-        self._s_fast = max(0.0, self._s_fast - q_fast)
-        self._s_slow = max(0.0, self._s_slow - q_slow)
-
-        return q_fast + q_slow   # mm/dt
-
-    def forecast_q_m3s(
-        self,
-        precip_6h_mm: float,
-        catchment_km2: float,
-        horizon_hours: int,
-        q_init_m3s: float,
-    ) -> list[float]:
-        """
-        Generate hourly discharge forecast over horizon_hours.
-
-        Returns:
-            list of discharge values (m³/s), one per hour.
-        """
-        # Run at 6-hour timestep, interpolate to hourly
-        n_steps = max(1, horizon_hours // 6)
-        q_steps: list[float] = [q_init_m3s]
-
-        for _ in range(n_steps):
-            runoff_mm = self.step(precip_mm=precip_6h_mm, dt_hours=6.0)
-            # Convert mm to m³/s: Q = (runoff_mm/1000) * area_m² / (dt_sec)
-            q_m3s = (runoff_mm / 1000.0) * (catchment_km2 * 1e6) / (6 * 3600)
-            q_steps.append(q_steps[-1] * 0.7 + q_m3s * 0.3 + q_init_m3s * 0.1)
-
-        # Linear interpolation to hourly
-        import numpy as np
-        x_steps = np.linspace(0, horizon_hours, len(q_steps))
-        x_hours = np.arange(1, horizon_hours + 1)
-        q_hourly = np.interp(x_hours, x_steps, q_steps)
-        return [float(round(q, 2)) for q in q_hourly]
-
-
-# ---------------------------------------------------------------------------
-# LSTM interface (wraps ANALYTICA Sprint 0+1 model)
-# ---------------------------------------------------------------------------
-
-class LSTMStreamflowInterface:
-    """
-    Thin wrapper around ANALYTICA's lstm_streamflow_model.
-    Falls back to autoregressive AR(2) stub when model unavailable.
-    """
-
-    def __init__(self, river_id: str) -> None:
-        self.river_id = river_id
-        self._model = None
-        try:
-            from src.models.lstm_streamflow_model import LSTMStreamflowModel
-            self._model = LSTMStreamflowModel(river_id)
-            logger.info("LSTMStreamflowModel loaded for %s", river_id)
-        except ImportError:
-            logger.warning("lstm_streamflow_model not found — using AR stub for %s", river_id)
-
-    def forecast(
-        self,
-        q_init_m3s: float,
-        precip_mm_6h: float,
-        sm_m3m3: float,
-        horizon_hours: int,
-    ) -> list[float]:
-        """Returns hourly discharge forecast list."""
-        if self._model is not None:
-            return self._model.predict(
-                current_q=q_init_m3s,
-                precip_mm_6h=precip_mm_6h,
-                sm_m3m3=sm_m3m3,
-                horizon_hours=horizon_hours,
-            )
-
-        # AR(2) stub with precipitation forcing
-        cfg = RIVER_CONFIGS[self.river_id]
-        rng = np.random.default_rng(int(q_init_m3s * 100) % (2**32))
-        phi1, phi2 = 0.70, 0.15
-        forcing = precip_mm_6h * cfg["catchment_km2"] * 0.05 / 3600
-        q = [q_init_m3s, q_init_m3s]
-        for _ in range(horizon_hours):
-            noise = float(rng.normal(0, q_init_m3s * 0.03))
-            q_next = phi1 * q[-1] + phi2 * q[-2] + forcing + noise
-            q.append(max(0.0, q_next))
-        return [round(v, 2) for v in q[2:]]
-
-
-# ---------------------------------------------------------------------------
-# Ensemble combiner
-# ---------------------------------------------------------------------------
-
-def _combine_ensemble(
-    lstm_q: list[float],
-    hbv_q: list[float],
-    lstm_weight: float = 0.65,
-) -> list[float]:
-    """Weighted average of LSTM and HBV forecasts, element-wise."""
-    hbv_weight = 1.0 - lstm_weight
-    return [
-        round(lstm_weight * l + hbv_weight * h, 2)
-        for l, h in zip(lstm_q, hbv_q)
-    ]
-
-
-def _classify_flood_stage(peak_q: float, river_id: str) -> FloodStage:
-    cfg = RIVER_CONFIGS[river_id]
-    if peak_q >= cfg["threshold_emergency"]: return FloodStage.EMERGENCY
-    if peak_q >= cfg["threshold_warning"]:   return FloodStage.WARNING
-    if peak_q >= cfg["threshold_watch"]:     return FloodStage.WATCH
-    return FloodStage.NORMAL
-
-
-def _compute_ci90(peak_q: float, uncertainty_frac: float = 0.18) -> Tuple[float, float]:
-    """Approximate 90% CI as ±1.645σ with σ = uncertainty_frac × peak_q."""
-    sigma = peak_q * uncertainty_frac
-    z90 = 1.645
-    lo = max(0.0, round(peak_q - z90 * sigma, 1))
-    hi = round(peak_q + z90 * sigma, 1)
-    return (lo, hi)
-
-
-# ---------------------------------------------------------------------------
-# Pipeline
-# ---------------------------------------------------------------------------
-
-class StreamflowForecastEngine:
-    """
-    Ensemble streamflow forecast engine (LSTM + HBV-light).
-
-    Usage (from Airflow flood_early_warning_30min DAG):
-        engine = StreamflowForecastEngine()
-        status = engine.run(precip_mm_6h=45.0, sm_m3m3=0.32, current_q={...})
-    """
-
-    def __init__(self, rivers: Optional[list[str]] = None) -> None:
-        self.rivers = rivers or list(RIVER_CONFIGS.keys())
-        self._lstms = {r: LSTMStreamflowInterface(r) for r in self.rivers}
-        self._hbvs  = {r: HBVModel(r) for r in self.rivers}
-        os.makedirs(OUTPUT_DIR, exist_ok=True)
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def run(
         self,
-        precip_mm_6h: float,
-        sm_m3m3: float = 0.30,
-        current_q: Optional[dict[str, float]] = None,
-        lstm_weight: float = 0.65,
-    ) -> ForecastRunStatus:
-        run_time = datetime.now(timezone.utc)
-        q_obs = current_q or {r: RIVER_CONFIGS[r]["mean_annual_q"] for r in self.rivers}
+        river_id: str,
+        horizons: list[int] | None = None,
+    ) -> StreamflowForecastResult:
+        """
+        Forecast streamflow for *river_id* at each horizon in *horizons* hours.
+        Returns StreamflowForecastResult with per-horizon peak discharge values.
+        """
+        if horizons is None:
+            horizons = [6, 12, 24]
 
-        all_forecasts: list[StreamflowForecast] = []
-        output_paths:  list[str] = []
-        warning_rivers:   list[str] = []
-        emergency_rivers: list[str] = []
-        mlflow_run_id: Optional[str] = None
+        river_id = river_id.lower()
+        run_ts   = datetime.now(timezone.utc).isoformat()
 
-        try:
-            mlflow_run_id = self._init_mlflow(run_time)
-        except Exception as exc:
-            logger.warning("MLflow init failed (non-fatal): %s", exc)
+        if river_id not in _RIVER_CATALOGUE:
+            raise ValueError(
+                f"Unknown river_id '{river_id}'. "
+                f"Supported: {list(_RIVER_CATALOGUE.keys())}"
+            )
 
-        for river_id in self.rivers:
-            cfg     = RIVER_CONFIGS[river_id]
-            q_init  = q_obs.get(river_id, cfg["mean_annual_q"])
+        warnings: list[str] = []
+        status = "ok"
 
-            for horizon in FORECAST_HORIZONS_HOURS:
-                lstm_q = self._lstms[river_id].forecast(
-                    q_init_m3s=q_init,
-                    precip_mm_6h=precip_mm_6h,
-                    sm_m3m3=sm_m3m3,
-                    horizon_hours=horizon,
+        # --- load QPE ---
+        qpe_data, qpe_warn = self._load_qpe()
+        warnings.extend(qpe_warn)
+
+        # --- load gauge (for QPE bias correction) ---
+        gauge_data, gauge_warn = self._load_gauge(river_id)
+        warnings.extend(gauge_warn)
+
+        # --- QPE bias correction factor from gauge ---
+        bias_factor = self._compute_bias_factor(river_id, qpe_data, gauge_data)
+
+        # --- sub-watershed forecasts ---
+        sub_watersheds = _RIVER_CATALOGUE[river_id]
+        tc             = _TC_HOURS[river_id]
+
+        horizon_results: list[HorizonForecast] = []
+        for h in sorted(horizons):
+            peak_cms, volume_Mm3, conf = self._forecast_horizon(
+                sub_watersheds, qpe_data, h, tc, bias_factor
+            )
+            horizon_results.append(
+                HorizonForecast(
+                    horizon_hr  = h,
+                    peak_cms    = round(peak_cms, 2),
+                    volume_Mm3  = round(volume_Mm3, 4),
+                    lag_hrs     = round(tc * 0.6, 2),   # simplified lag = 0.6 · tc
+                    confidence  = round(conf, 3),
                 )
-                hbv_q = self._hbvs[river_id].forecast_q_m3s(
-                    precip_6h_mm=precip_mm_6h,
-                    catchment_km2=cfg["catchment_km2"],
-                    horizon_hours=horizon,
-                    q_init_m3s=q_init,
-                )
-                ensemble_q = _combine_ensemble(lstm_q, hbv_q, lstm_weight)
-                peak_q     = max(ensemble_q)
-                stage      = _classify_flood_stage(peak_q, river_id)
-                ci90       = _compute_ci90(peak_q)
+            )
 
-                from datetime import timedelta
-                forecast = StreamflowForecast(
-                    river_id=river_id,
-                    river_name=cfg["display_name"],
-                    province=cfg["province"],
-                    forecast_horizon_hours=horizon,
-                    discharge_m3s=ensemble_q,
-                    peak_discharge_m3s=round(peak_q, 2),
-                    flood_stage=stage,
-                    confidence_interval_90=ci90,
-                    lstm_weight=lstm_weight,
-                    hbv_weight=round(1.0 - lstm_weight, 2),
-                    issued_at=run_time,
-                    valid_until=run_time + timedelta(hours=horizon),
-                )
-                all_forecasts.append(forecast)
+        peak_max = max(h.peak_cms for h in horizon_results)
 
-                if stage == FloodStage.EMERGENCY and river_id not in emergency_rivers:
-                    emergency_rivers.append(river_id)
-                elif stage == FloodStage.WARNING and river_id not in warning_rivers:
-                    warning_rivers.append(river_id)
+        if warnings:
+            status = "degraded"
 
-            # Persist per-river JSON (latest horizon = 24h)
-            path = self._write_output(river_id, all_forecasts, run_time)
-            output_paths.append(path)
+        # --- emit Prometheus metrics ---
+        self._emit_metrics(river_id, horizon_results, status)
 
-        # Log to MLflow
-        if mlflow_run_id:
-            self._log_mlflow(mlflow_run_id, all_forecasts)
-
-        # Metrics
-        record_ingestion_success("flood_early_warning_30min")
-
-        return ForecastRunStatus(
-            run_time_utc=run_time,
-            rivers_processed=len(self.rivers),
-            forecasts=all_forecasts,
-            rivers_in_warning=warning_rivers,
-            rivers_in_emergency=emergency_rivers,
-            output_paths=output_paths,
-            mlflow_run_id=mlflow_run_id,
-            success=True,
+        # --- write output ---
+        ts_str    = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+        out_path  = self.OUTPUT_DIR / f"forecast_{river_id}_{ts_str}.json"
+        result    = StreamflowForecastResult(
+            river_id     = river_id,
+            run_ts       = run_ts,
+            horizons     = horizon_results,
+            peak_cms_max = round(peak_max, 2),
+            data_sources = {
+                "qpe_path":   str(self.QPE_PATH),
+                "gauge_path": str(self.GAUGE_PATH),
+            },
+            output_path  = str(out_path),
+            status       = status,
+            warnings     = warnings,
         )
 
+        with open(out_path, "w") as f:
+            json.dump(self._result_to_dict(result), f, indent=2)
+
+        logger.info(
+            "Streamflow forecast | river=%s status=%s peak_max=%.1f m³/s path=%s",
+            river_id, status, peak_max, out_path,
+        )
+        return result
+
     # ------------------------------------------------------------------
-    # Output
+    # Private helpers
     # ------------------------------------------------------------------
 
-    def _write_output(
+    def _load_qpe(self) -> tuple[dict[str, Any], list[str]]:
+        warnings: list[str] = []
+        if not self.QPE_PATH.exists():
+            warnings.append(f"QPE file not found at {self.QPE_PATH}; using zero precipitation")
+            return {"mean_precip_mm_hr": 0.0, "coverage_pct": 0.0, "valid": False}, warnings
+        with open(self.QPE_PATH) as f:
+            data = json.load(f)
+        if not data.get("valid", True):
+            warnings.append("QPE file marked invalid; results degraded")
+        return data, warnings
+
+    def _load_gauge(
+        self, river_id: str
+    ) -> tuple[dict[str, Any], list[str]]:
+        warnings: list[str] = []
+        if not self.GAUGE_PATH.exists():
+            warnings.append(f"Gauge file not found at {self.GAUGE_PATH}; skipping bias correction")
+            return {}, warnings
+        with open(self.GAUGE_PATH) as f:
+            data = json.load(f)
+        river_gauges = data.get(river_id, {})
+        if not river_gauges:
+            warnings.append(f"No gauge data for river '{river_id}' in {self.GAUGE_PATH}")
+        return river_gauges, warnings
+
+    def _compute_bias_factor(
         self,
         river_id: str,
-        forecasts: list[StreamflowForecast],
-        run_time: datetime,
-    ) -> str:
-        ts = run_time.strftime("%Y%m%dT%H%M%SZ")
-        fname = f"{river_id}_{ts}.json"
-        path  = os.path.join(OUTPUT_DIR, fname)
-        river_forecasts = [f for f in forecasts if f.river_id == river_id]
-        payload = {
-            "river_id":   river_id,
-            "issued_at":  run_time.isoformat(),
-            "forecasts":  [f.model_dump() for f in river_forecasts],
-        }
-        with open(path, "w") as fh:
-            json.dump(payload, fh, indent=2, default=str)
-        logger.info("Streamflow forecast written: %s", path)
-        return path
+        qpe_data:   dict[str, Any],
+        gauge_data: dict[str, Any],
+    ) -> float:
+        """
+        Ratio of mean gauge precip to QPE precip for the river.
+        Returns 1.0 (no correction) when data is unavailable.
+        """
+        qpe_precip   = float(qpe_data.get("mean_precip_mm_hr", 0.0) or 0.0)
+        # gauge data may store mean_precip_mm_hr at river level
+        gauge_precip = float(gauge_data.get("mean_precip_mm_hr", 0.0) or 0.0)
+        if qpe_precip <= 0 or gauge_precip <= 0:
+            return 1.0
+        factor = gauge_precip / qpe_precip
+        # Clip to a reasonable range [0.5, 2.0] to avoid outlier inflation
+        return max(0.5, min(2.0, factor))
 
-    # ------------------------------------------------------------------
-    # MLflow
-    # ------------------------------------------------------------------
+    def _forecast_horizon(
+        self,
+        sub_watersheds: list[dict[str, Any]],
+        qpe_data:       dict[str, Any],
+        horizon_hr:     int,
+        tc:             float,
+        bias_factor:    float,
+    ) -> tuple[float, float, float]:
+        """
+        Compute basin-aggregated peak Q (m³/s), runoff volume (Mm³),
+        and confidence score for a given forecast horizon.
+        """
+        # Mean QPE intensity over the horizon window (mm/hr)
+        # For multi-horizon: intensity decays with a simple exp envelope
+        base_intensity = float(qpe_data.get("mean_precip_mm_hr", 0.0) or 0.0)
+        base_intensity *= bias_factor
 
-    def _init_mlflow(self, run_time: datetime) -> str:
-        import mlflow
-        mlflow.set_experiment(MLFLOW_EXPERIMENT)
-        run = mlflow.start_run(
-            run_name=f"streamflow_forecast_{run_time.strftime('%Y%m%dT%H%M%SZ')}",
-            tags={"pipeline": "flood_early_warning_30min", "agent": "HYDROLOGIS"},
-        )
-        return run.info.run_id
+        # Exponential decay factor: longer horizons see lower sustained intensity
+        decay = math.exp(-0.03 * max(0, horizon_hr - 6))
+        i_eff = base_intensity * decay   # effective intensity (mm/hr)
 
-    def _log_mlflow(self, run_id: str, forecasts: list[StreamflowForecast]) -> None:
+        # Rational method aggregated across sub-watersheds:
+        # Q_peak = sum(C_j · i · A_j) / 3.6    [m³/s]
+        q_peak    = 0.0
+        total_A   = 0.0
+        for sw in sub_watersheds:
+            q_peak  += sw["C"] * i_eff * sw["A_km2"] / 3.6
+            total_A += sw["A_km2"]
+
+        # Routing: time-shift peak by lag (0.6 · tc); if horizon < lag, Q is pre-peak
+        lag = 0.6 * tc
+        if horizon_hr < lag:
+            ratio  = horizon_hr / lag
+            q_peak = q_peak * ratio
+
+        # Runoff volume = Q_peak · duration (simplified rectangular hydrograph)
+        # V [m³] = Q_peak [m³/s] · horizon [s]; convert to Mm³
+        v_Mm3 = q_peak * horizon_hr * 3600 / 1e6
+
+        # Confidence: penalise low QPE coverage and long horizons
+        coverage = float(qpe_data.get("coverage_pct", 100.0) or 100.0)
+        conf = (coverage / 100.0) * math.exp(-0.015 * horizon_hr)
+
+        return q_peak, v_Mm3, conf
+
+    def _emit_metrics(
+        self,
+        river_id: str,
+        horizons: list[HorizonForecast],
+        status:   str,
+    ) -> None:
         try:
-            import mlflow
-            with mlflow.start_run(run_id=run_id):
-                for f in forecasts:
-                    mlflow.log_metric(
-                        f"{f.river_id}_peak_q_{f.forecast_horizon_hours}h",
-                        f.peak_discharge_m3s,
-                    )
-                    mlflow.log_param(f"{f.river_id}_stage_{f.forecast_horizon_hours}h", f.flood_stage)
-        except Exception as exc:
-            logger.warning("MLflow logging failed (non-fatal): %s", exc)
+            from src.hydrology.metrics import (
+                STREAMFLOW_FORECAST_PEAK,
+                STREAMFLOW_FORECAST_RUNS,
+            )
+            for h in horizons:
+                STREAMFLOW_FORECAST_PEAK.labels(
+                    river_id=river_id,
+                    horizon_hr=str(h.horizon_hr),
+                ).set(h.peak_cms)
+            STREAMFLOW_FORECAST_RUNS.labels(
+                river_id=river_id,
+                status=status,
+            ).inc()
+        except Exception as exc:  # pragma: no cover
+            logger.debug("Prometheus metrics unavailable: %s", exc)
+
+    @staticmethod
+    def _result_to_dict(result: StreamflowForecastResult) -> dict[str, Any]:
+        d = asdict(result)
+        return d
